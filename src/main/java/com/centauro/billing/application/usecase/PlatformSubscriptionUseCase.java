@@ -139,8 +139,9 @@ public class PlatformSubscriptionUseCase {
         OffsetDateTime newEnd = request.trialEndsAt();
         if (hasDays) {
             OffsetDateTime current = subscription.getTrialEndsAt();
-            OffsetDateTime base = current != null && current.isAfter(now) ? current : now;
-            newEnd = periodCalculator.startOfDayAfter(base, request.days());
+            newEnd = current != null && current.isAfter(now)
+                    ? periodCalculator.extendExclusiveEnd(current, request.days())
+                    : periodCalculator.startOfDayAfter(now, request.days());
         }
         SubscriptionEvent event = subscription.extendTrial(newEnd, actor, request.reason(), now);
         return persist(subscription, event, now);

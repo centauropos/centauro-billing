@@ -4,6 +4,7 @@ import com.centauro.billing.domain.enums.PastDueReason;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
 import com.centauro.billing.domain.model.Subscription;
 
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.YearMonth;
 import java.time.ZoneId;
@@ -99,5 +100,17 @@ public final class PeriodCalculator {
     public OffsetDateTime startOfDayAfter(OffsetDateTime from, int days) {
         return from.atZoneSameInstant(zone).toLocalDate().plusDays(days + 1L)
                 .atStartOfDay(zone).toOffsetDateTime();
+    }
+
+    /**
+     * Corre {@code days} días calendario AR un vencimiento exclusivo ya vigente. Si {@code end} cae a
+     * las 00:00 AR, el día de {@code end} no tiene acceso y no cuenta; si no, se cubre completo.
+     */
+    public OffsetDateTime extendExclusiveEnd(OffsetDateTime end, int days) {
+        ZonedDateTime local = end.atZoneSameInstant(zone);
+        if (local.toLocalTime().equals(LocalTime.MIDNIGHT)) {
+            return local.toLocalDate().plusDays(days).atStartOfDay(zone).toOffsetDateTime();
+        }
+        return startOfDayAfter(end, days);
     }
 }

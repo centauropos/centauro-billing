@@ -1,5 +1,6 @@
 package com.centauro.billing.application.usecase;
 
+import com.centauro.billing.application.dto.ExtendTrialRequest;
 import com.centauro.billing.application.dto.PlatformCancelRequest;
 import com.centauro.billing.application.dto.PlatformChangePlanRequest;
 import com.centauro.billing.application.dto.ReactivateRequest;
@@ -8,6 +9,7 @@ import com.centauro.billing.application.dto.TenantSubscriptionView;
 import com.centauro.billing.application.service.GatewayOperations;
 import com.centauro.billing.application.service.PaymentApplier;
 import com.centauro.billing.application.service.SubscriptionViewAssembler;
+import com.centauro.billing.domain.enums.PastDueReason;
 import com.centauro.billing.domain.enums.PaymentSource;
 import com.centauro.billing.domain.enums.PaymentStatus;
 import com.centauro.billing.domain.enums.SubscriptionEventType;
@@ -86,6 +88,30 @@ class PlatformSubscriptionUseCaseTest {
     @AfterEach
     void tearDown() {
         TransactionSynchronizationManager.clearSynchronization();
+    }
+
+    @Test
+    void extendTrialByDaysFromAnActiveTrialAddsExactlyThoseDays() {
+        OffsetDateTime trialEnd = OffsetDateTime.of(2026, 10, 25, 0, 0, 0, 0, NOW.getOffset());
+        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.TRIALING)
+                .trialEndsAt(trialEnd).build());
+
+        useCase.extendTrial("tenant-1", new ExtendTrialRequest(7, null, "demo"), ADMIN);
+
+        assertThat(subscriptions.findByTenantId("tenant-1").orElseThrow().getTrialEndsAt())
+                .isEqualTo(OffsetDateTime.of(2026, 11, 1, 0, 0, 0, 0, NOW.getOffset()));
+    }
+
+    @Test
+    void extendTrialByDaysFromAnExpiredTrialCountsFromToday() {
+        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.PAST_DUE)
+                .pastDueReason(PastDueReason.TRIAL_EXPIRED).trialEndsAt(NOW.minusDays(1))
+                .graceEndsAt(NOW.plusDays(2)).build());
+
+        useCase.extendTrial("tenant-1", new ExtendTrialRequest(7, null, "demo"), ADMIN);
+
+        assertThat(subscriptions.findByTenantId("tenant-1").orElseThrow().getTrialEndsAt())
+                .isEqualTo(OffsetDateTime.of(2026, 10, 19, 0, 0, 0, 0, NOW.getOffset()));
     }
 
     @Test
