@@ -33,6 +33,8 @@ public record BillingProperties(
                        @DefaultValue("0 0 * * * *") String checkoutExpirationCron,
                        @DefaultValue("0 */5 * * * *") String webhookRetryCron,
                        @DefaultValue("0 30 4 * * *") String reconciliationCron,
-                       @DefaultValue("10") int webhookMaxAttempts) {
+                       @DefaultValue("10") int webhookMaxAttempts,
+                       @DefaultValue("2000") int reconciliationMaxItems,
+                       @DefaultValue("20") int reconciliationMaxMinutes) {
     }
 }

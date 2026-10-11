@@ -55,6 +55,8 @@ public class MercadoPagoGateway implements PaymentGateway {
     static final String IDEMPOTENCY_HEADER = "X-Idempotency-Key";
     /** Verificar contra MP: se asume {@code cancelled} para escribir (al leer se aceptan ambas grafías). */
     static final String CANCELLED_STATUS = "cancelled";
+    static final String PAUSED_STATUS = "paused";
+    static final String AUTHORIZED_STATUS = "authorized";
 
     private static final Logger log = LoggerFactory.getLogger(MercadoPagoGateway.class);
     private static final DateTimeFormatter MP_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
@@ -164,6 +166,20 @@ public class MercadoPagoGateway implements PaymentGateway {
     public void cancel(String gatewaySubscriptionId) {
         put(gatewaySubscriptionId, new MpPreapprovalUpdate(CANCELLED_STATUS, null), "la cancelación");
         log.info("Mercado Pago: preapproval {} cancelado", gatewaySubscriptionId);
+    }
+
+    /** Verificar contra MP que {@code PUT status=paused} pause los cobros sin pedir nada al pagador. */
+    @Override
+    public void pause(String gatewaySubscriptionId) {
+        put(gatewaySubscriptionId, new MpPreapprovalUpdate(PAUSED_STATUS, null), "la pausa");
+        log.info("Mercado Pago: preapproval {} pausado", gatewaySubscriptionId);
+    }
+
+    /** Verificar contra MP que {@code PUT status=authorized} reanude un preapproval pausado. */
+    @Override
+    public void resume(String gatewaySubscriptionId) {
+        put(gatewaySubscriptionId, new MpPreapprovalUpdate(AUTHORIZED_STATUS, null), "la reanudación");
+        log.info("Mercado Pago: preapproval {} reanudado", gatewaySubscriptionId);
     }
 
     private void put(String gatewaySubscriptionId, MpPreapprovalUpdate body, String operation) {

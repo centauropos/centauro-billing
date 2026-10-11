@@ -1,6 +1,7 @@
 package com.centauro.billing.support;
 
 import com.centauro.billing.domain.enums.GatewayName;
+import com.centauro.billing.domain.enums.GatewaySubscriptionStatus;
 import com.centauro.billing.domain.port.PaymentGateway;
 import com.centauro.billing.domain.vo.GatewayChargeSnapshot;
 import com.centauro.billing.domain.vo.GatewaySubscriptionSnapshot;
@@ -19,6 +20,8 @@ public class FakePaymentGateway implements PaymentGateway {
     public final List<RecurringCheckoutRequest> created = new ArrayList<>();
     public final List<String> canceled = new ArrayList<>();
     public final List<String> amountUpdates = new ArrayList<>();
+    public final List<String> paused = new ArrayList<>();
+    public final List<String> resumed = new ArrayList<>();
     public final List<String> subscriptionLookups = new ArrayList<>();
     public final List<String> chargeLookups = new ArrayList<>();
     public final Map<String, GatewaySubscriptionSnapshot> subscriptions = new HashMap<>();
@@ -40,6 +43,8 @@ public class FakePaymentGateway implements PaymentGateway {
         failIfConfigured();
         created.add(request);
         String id = "pre-" + (++sequence);
+        subscriptions.putIfAbsent(id, new GatewaySubscriptionSnapshot(id, GatewaySubscriptionStatus.PENDING,
+                "pending", request.checkoutId().toString(), request.amount(), request.currency(), null, null));
         return new RecurringCheckoutResult(id, "https://mp.test/checkout/" + id, "pending");
     }
 
@@ -81,6 +86,18 @@ public class FakePaymentGateway implements PaymentGateway {
     public void cancel(String gatewaySubscriptionId) {
         failIfConfigured();
         canceled.add(gatewaySubscriptionId);
+    }
+
+    @Override
+    public void pause(String gatewaySubscriptionId) {
+        failIfConfigured();
+        paused.add(gatewaySubscriptionId);
+    }
+
+    @Override
+    public void resume(String gatewaySubscriptionId) {
+        failIfConfigured();
+        resumed.add(gatewaySubscriptionId);
     }
 
     private void failIfConfigured() {

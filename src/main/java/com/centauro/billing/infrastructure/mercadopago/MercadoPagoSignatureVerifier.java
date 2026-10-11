@@ -21,15 +21,20 @@ import java.util.Locale;
  * sobre el manifiesto {@code id:<data.id>;request-id:<x-request-id>;ts:<ts>;}. Según la doc de MP, el segmento
  * de un valor ausente se omite y un {@code data.id} alfanumérico va en minúsculas (verificar).
  *
- * <p>No depende del access token: el bean existe siempre y, sin secreto, el webhook responde 401 a todo.
+ * <p>Con secreto configurado la firma es siempre obligatoria y {@code require-signature} se ignora. Sin secreto:
+ * con {@code require-signature=true} (default) el webhook responde 401 a todo; con {@code false} acepta sin
+ * verificar (solo desarrollo), y la aplicación no arranca si el access token es de producción ({@code APP_USR-}).
+ *
+ * <p>Antigüedad: si {@code max-skew-seconds > 0}, un {@code ts} fuera de esa ventana es {@code EXPIRED}. No está
+ * confirmado si MP manda el {@code ts} en segundos o en milisegundos: un valor mayor a 10^12 se toma como
+ * milisegundos (10^12 segundos es el año 33658; 10^12 milisegundos, septiembre de 2001).
  */
 @Component
 public class MercadoPagoSignatureVerifier implements WebhookSignatureVerifier {
 
     private static final Logger log = LoggerFactory.getLogger(MercadoPagoSignatureVerifier.class);
     private static final String HMAC = "HmacSHA256";
-    /** Un {@code ts} mayor a esto está en milisegundos (verificar la unidad contra MP). */
-    private static final long MILLIS_THRESHOLD = 100_000_000_000L;
+    static final long MILLIS_THRESHOLD = 1_000_000_000_000L;
 
     private final MercadoPagoProperties properties;
     private final Clock clock;
@@ -37,25 +42,34 @@ public class MercadoPagoSignatureVerifier implements WebhookSignatureVerifier {
     public MercadoPagoSignatureVerifier(MercadoPagoProperties properties, Clock clock) {
         this.properties = properties;
         this.clock = clock;
-        if (properties.hasAccessToken() && !properties.hasWebhookSecret() && properties.webhook().requireSignature()) {
-            log.warn("Mercado Pago: MP_ACCESS_TOKEN configurado sin MP_WEBHOOK_SECRET; el webhook va a rechazar "
-                    + "todas las notificaciones con 401");
+        boolean requireSignature = properties.webhook().requireSignature();
+        if (!requireSignature && properties.isProductionToken()) {
+            throw new IllegalStateException("MP_WEBHOOK_REQUIRE_SIGNATURE=false no se admite con un access token "
+                    + "de producción de Mercado Pago");
         }
-        if (!properties.webhook().requireSignature()) {
-            log.warn("Mercado Pago: MP_WEBHOOK_REQUIRE_SIGNATURE=false; se aceptan notificaciones sin firma");
+        if (properties.hasWebhookSecret()) {
+            if (!requireSignature) {
+                log.warn("Mercado Pago: MP_WEBHOOK_SECRET configurado; se ignora MP_WEBHOOK_REQUIRE_SIGNATURE=false "
+                        + "y la firma es obligatoria");
+            }
+        } else if (requireSignature) {
+            if (properties.hasAccessToken()) {
+                log.warn("Mercado Pago: MP_ACCESS_TOKEN configurado sin MP_WEBHOOK_SECRET; el webhook va a rechazar "
+                        + "todas las notificaciones con 401");
+            }
+        } else {
+            log.warn("Mercado Pago: sin MP_WEBHOOK_SECRET y MP_WEBHOOK_REQUIRE_SIGNATURE=false; se aceptan "
+                    + "notificaciones sin firma (solo desarrollo)");
         }
     }
 
     @Override
     public WebhookSignatureResult verify(String signatureHeader, String requestId, String dataId) {
-        boolean absent = signatureHeader == null || signatureHeader.isBlank();
-        if (absent && !properties.webhook().requireSignature()) {
-            return WebhookSignatureResult.VALID;
-        }
         if (!properties.hasWebhookSecret()) {
-            return WebhookSignatureResult.MISSING_SECRET;
+            return properties.webhook().requireSignature()
+                    ? WebhookSignatureResult.MISSING_SECRET : WebhookSignatureResult.VALID;
         }
-        if (absent) {
+        if (signatureHeader == null || signatureHeader.isBlank()) {
             return WebhookSignatureResult.MALFORMED;
         }
         String ts = null;
@@ -84,14 +98,16 @@ public class MercadoPagoSignatureVerifier implements WebhookSignatureVerifier {
         }
         long maxSkew = properties.webhook().maxSkewSeconds();
         if (maxSkew > 0) {
-            long value = Long.parseLong(ts);
-            long seconds = value > MILLIS_THRESHOLD ? value / 1000 : value;
-            long skew = Math.abs(Instant.now(clock).getEpochSecond() - seconds);
+            long skew = Math.abs(Instant.now(clock).getEpochSecond() - epochSeconds(Long.parseLong(ts)));
             if (skew > maxSkew) {
                 return WebhookSignatureResult.EXPIRED;
             }
         }
         return WebhookSignatureResult.VALID;
+    }
+
+    static long epochSeconds(long ts) {
+        return ts > MILLIS_THRESHOLD ? ts / 1000 : ts;
     }
 
     static String manifest(String dataId, String requestId, String ts) {

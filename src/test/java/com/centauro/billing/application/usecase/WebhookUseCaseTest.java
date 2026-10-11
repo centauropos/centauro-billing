@@ -12,6 +12,8 @@ import com.centauro.billing.domain.enums.SubscriptionEventType;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
 import com.centauro.billing.domain.enums.SuspensionReason;
 import com.centauro.billing.domain.enums.WebhookStatus;
+import com.centauro.billing.domain.exception.InvalidBillingRequestException;
+import com.centauro.billing.domain.model.GatewayCheckout;
 import com.centauro.billing.domain.model.Payment;
 import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.Subscription;
@@ -31,6 +33,7 @@ import static com.centauro.billing.support.TestFixtures.NOW;
 import static com.centauro.billing.support.TestFixtures.plan;
 import static com.centauro.billing.support.TestFixtures.subscription;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WebhookUseCaseTest {
 
@@ -184,17 +187,18 @@ class WebhookUseCaseTest {
     }
 
     @Test
-    void approvedChargeInAnotherCurrencyIsRecordedWithoutApplying() {
+    void approvedChargeInAnotherCurrencyIsNotStoredAndOnlyTheEventKeepsTheRealAmount() {
         Subscription s = linkedTrial();
         h.charge("ap-1", "pre-1", GatewayChargeStatus.APPROVED, PRICE, "USD");
 
         notify("n-2", PAYMENT, "ap-1");
+        notify("n-3", PAYMENT, "ap-1");
 
-        Payment payment = h.payments.payments.values().iterator().next();
-        assertThat(payment.applied()).isFalse();
-        assertThat(payment.currency()).isEqualTo("ARS");
+        assertThat(h.payments.payments).isEmpty();
         assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.TRIALING);
-        assertThat(h.events.types()).contains(SubscriptionEventType.PAYMENT_AMOUNT_MISMATCH);
+        assertThat(h.events.events).filteredOn(e -> e.type() == SubscriptionEventType.PAYMENT_CURRENCY_MISMATCH)
+                .singleElement()
+                .satisfies(e -> assertThat(e.data()).containsEntry("currency", "USD").containsEntry("amount", "59900.00"));
     }
 
     @Test
@@ -316,5 +320,223 @@ class WebhookUseCaseTest {
 
         assertThat(event("n-1").getStatus()).isEqualTo(WebhookStatus.IGNORED);
         assertThat(h.payments.payments).isEmpty();
+    }
+
+    // ---------------------------------------------------------------- importe del cobro
+
+    @Test
+    void chargeWithTheOldDebitAmountAfterAPlanChangeIsApplied() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        UUID checkoutId = checkout("INICIAL");
+        h.preapproval("pre-1", GatewaySubscriptionStatus.AUTHORIZED, checkoutId, new BigDecimal("14900"), NOW);
+        notify("n-auth", PREAPPROVAL, "pre-1");
+        // Upgrade desde la plataforma: el precio sube, pero el cobro llega antes de que MP tome el importe nuevo.
+        s.changePlan(pro.getId(), "PROFESIONAL", PRICE, Actor.platformAdmin("admin"), "upgrade", NOW);
+        h.charge("ap-1", "pre-1", GatewayChargeStatus.APPROVED, new BigDecimal("14900"));
+
+        notify("n-2", PAYMENT, "ap-1");
+
+        assertThat(h.payments.payments.values()).singleElement().satisfies(p -> assertThat(p.applied()).isTrue());
+        assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+        assertThat(h.events.types()).doesNotContain(SubscriptionEventType.PAYMENT_AMOUNT_MISMATCH,
+                SubscriptionEventType.PAYMENT_OVERPAID);
+    }
+
+    @Test
+    void chargeWithTheNewPriceAfterAPlanChangeIsApplied() {
+        Subscription s = linkedTrial();
+        s.changePlan(h.plans.findByCode("INICIAL").orElseThrow().getId(), "INICIAL", new BigDecimal("14900"),
+                Actor.platformAdmin("admin"), "downgrade", NOW);
+        h.charge("ap-1", "pre-1", GatewayChargeStatus.APPROVED, new BigDecimal("14900"));
+
+        notify("n-2", PAYMENT, "ap-1");
+
+        assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+        assertThat(h.events.types()).doesNotContain(SubscriptionEventType.PAYMENT_AMOUNT_MISMATCH,
+                SubscriptionEventType.PAYMENT_OVERPAID);
+    }
+
+    @Test
+    void chargeAboveEveryReferenceIsAppliedAndReportedAsOverpaid() {
+        Subscription s = linkedTrial();
+        h.charge("ap-1", "pre-1", GatewayChargeStatus.APPROVED, new BigDecimal("70000"));
+
+        notify("n-2", PAYMENT, "ap-1");
+
+        assertThat(h.payments.payments.values()).singleElement().satisfies(p -> assertThat(p.applied()).isTrue());
+        assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+        assertThat(h.events.events).filteredOn(e -> e.type() == SubscriptionEventType.PAYMENT_OVERPAID)
+                .singleElement()
+                .satisfies(e -> assertThat(e.data()).containsEntry("amount", "70000.00")
+                        .containsEntry("debitAmount", "59900.00").containsEntry("priceAmount", "59900.00"));
+    }
+
+    // ---------------------------------------------------------------- débito reemplazado
+
+    @Test
+    void approvedChargeOfASupersededDebitIsKeptUnappliedAndItsCancellationIsRequestedAgain() {
+        Subscription s = h.store(subscription().planId(pro.getId()).status(SubscriptionStatus.PAST_DUE)
+                .pastDueReason(PastDueReason.PERIOD_UNPAID).currentPeriodEnd(NOW.minusDays(1))
+                .graceEndsAt(NOW.plusDays(6)).build());
+        UUID first = checkout("PROFESIONAL");
+        h.preapproval("pre-1", GatewaySubscriptionStatus.AUTHORIZED, first, PRICE, NOW);
+        notify("n-auth-1", PREAPPROVAL, "pre-1");
+        UUID second = checkout("INICIAL");
+        h.preapproval("pre-2", GatewaySubscriptionStatus.AUTHORIZED, second, new BigDecimal("14900"), NOW);
+        notify("n-auth-2", PREAPPROVAL, "pre-2");
+        assertThat(s.getGatewaySubscriptionId()).isEqualTo("pre-2");
+        h.gateway.canceled.clear();
+        h.charge("ap-old", "pre-1", GatewayChargeStatus.APPROVED, PRICE);
+
+        notify("n-3", PAYMENT, "ap-old");
+
+        assertThat(h.payments.payments.values()).singleElement().satisfies(p -> {
+            assertThat(p.status()).isEqualTo(PaymentStatus.APPROVED);
+            assertThat(p.applied()).isFalse();
+            assertThat(p.notes()).contains("pre-1");
+        });
+        assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.PAST_DUE);
+        assertThat(h.events.events).filteredOn(e -> e.type() == SubscriptionEventType.PAYMENT_FROM_SUPERSEDED_DEBIT)
+                .singleElement()
+                .satisfies(e -> assertThat(e.data()).containsEntry("gatewaySubscriptionId", "pre-1")
+                        .containsEntry("currentGatewaySubscriptionId", "pre-2"));
+        assertThat(h.gateway.canceled).contains("pre-1").doesNotContain("pre-2");
+    }
+
+    // ---------------------------------------------------------------- autorización tardía
+
+    private GatewayCheckout expired(UUID checkoutId) {
+        GatewayCheckout c = h.checkouts.findById(checkoutId).orElseThrow();
+        c.markExpired(NOW);
+        return h.checkouts.save(c);
+    }
+
+    @Test
+    void lateAuthorizationIsDiscardedUnderAdminSuspension() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        UUID checkoutId = checkout("PROFESIONAL");
+        expired(checkoutId);
+        s.suspendByAdmin(SuspensionReason.ADMIN_BLOCK, Actor.platformAdmin("admin"), "fraude", NOW);
+        h.preapproval("pre-1", GatewaySubscriptionStatus.AUTHORIZED, checkoutId, PRICE, NOW);
+
+        notify("n-1", PREAPPROVAL, "pre-1");
+
+        assertThat(s.hasGatewaySubscription()).isFalse();
+        assertThat(h.gateway.canceled).containsExactly("pre-1");
+        assertThat(h.events.events).filteredOn(e -> e.type() == SubscriptionEventType.LATE_AUTHORIZATION_DISCARDED)
+                .singleElement().satisfies(e -> assertThat(e.reason()).contains("suspensión"));
+    }
+
+    @Test
+    void lateAuthorizationIsDiscardedWhenANewerCheckoutOwnsTheCurrentDebit() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        UUID old = checkout("PROFESIONAL");
+        expired(old);
+        UUID newer = checkout("INICIAL");
+        h.preapproval("pre-2", GatewaySubscriptionStatus.AUTHORIZED, newer, new BigDecimal("14900"), NOW);
+        notify("n-1", PREAPPROVAL, "pre-2");
+        h.gateway.canceled.clear();
+        h.preapproval("pre-1", GatewaySubscriptionStatus.AUTHORIZED, old, PRICE, NOW);
+
+        notify("n-2", PREAPPROVAL, "pre-1");
+
+        assertThat(s.getGatewaySubscriptionId()).isEqualTo("pre-2");
+        assertThat(h.gateway.canceled).containsExactly("pre-1");
+        assertThat(h.events.types()).contains(SubscriptionEventType.LATE_AUTHORIZATION_DISCARDED);
+    }
+
+    @Test
+    void lateAuthorizationIsDiscardedAfterACancellationScheduledLater() {
+        Subscription s = h.store(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+                .currentPeriodEnd(NOW.plusDays(10)).build());
+        UUID checkoutId = checkout("PROFESIONAL");
+        expired(checkoutId);
+        h.events.append(s.cancel(Actor.tenantUser("owner"), "me voy", NOW.plusMinutes(5)));
+        h.preapproval("pre-1", GatewaySubscriptionStatus.AUTHORIZED, checkoutId, PRICE, NOW.plusMinutes(10));
+
+        notify("n-1", PREAPPROVAL, "pre-1");
+
+        assertThat(s.hasGatewaySubscription()).isFalse();
+        assertThat(s.isCancelAtPeriodEnd()).isTrue();
+        assertThat(h.gateway.canceled).containsExactly("pre-1");
+    }
+
+    @Test
+    void lateAuthorizationWithoutBlockersIsLinkedAndCancelsTheOtherKnownPreapprovals() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        UUID late = checkout("PROFESIONAL");
+        expired(late);
+        UUID pending = checkout("INICIAL");
+        h.preapproval("pre-1", GatewaySubscriptionStatus.AUTHORIZED, late, PRICE, NOW);
+
+        notify("n-1", PREAPPROVAL, "pre-1");
+
+        assertThat(s.getGatewaySubscriptionId()).isEqualTo("pre-1");
+        assertThat(h.checkouts.findById(pending).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.SUPERSEDED);
+        assertThat(h.gateway.canceled).containsExactly("pre-2");
+    }
+
+    @Test
+    void linkingANewDebitAlsoCancelsAnExpiredCheckoutPreapproval() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        UUID old = checkout("PROFESIONAL");
+        expired(old);
+        UUID current = checkout("INICIAL");
+        h.preapproval("pre-2", GatewaySubscriptionStatus.AUTHORIZED, current, new BigDecimal("14900"), NOW);
+        h.gateway.canceled.clear();
+
+        notify("n-1", PREAPPROVAL, "pre-2");
+
+        assertThat(s.getGatewaySubscriptionId()).isEqualTo("pre-2");
+        assertThat(h.gateway.canceled).containsExactly("pre-1");
+    }
+
+    // ---------------------------------------------------------------- deduplicación y validación
+
+    @Test
+    void dedupeIsByRequestIdAndDataIdSoTheSameRequestIdForAnotherResourceIsStored() {
+        h.webhookUseCase.receive(new WebhookNotification(GatewayName.MERCADOPAGO, null, "req-x", "payment",
+                null, "1", false, Map.of()));
+        h.webhookUseCase.receive(new WebhookNotification(GatewayName.MERCADOPAGO, null, "req-x", "payment",
+                null, "2", false, Map.of()));
+        boolean again = h.webhookUseCase.receive(new WebhookNotification(GatewayName.MERCADOPAGO, "otro-id-del-body",
+                "req-x", "payment", null, "1", false, Map.of()));
+
+        assertThat(again).isFalse();
+        assertThat(h.webhookEvents.all()).extracting(WebhookEvent::getDedupeKey)
+                .containsExactlyInAnyOrder("r:req-x:d:1", "r:req-x:d:2");
+    }
+
+    @Test
+    void notificationsWithoutRequestIdOrWithIdsLongerThanTheColumnsAreRejected() {
+        assertThatThrownBy(() -> h.webhookUseCase.receive(new WebhookNotification(GatewayName.MERCADOPAGO, "n-1",
+                null, PREAPPROVAL, null, "pre-1", false, Map.of()))).isInstanceOf(InvalidBillingRequestException.class);
+        assertThatThrownBy(() -> h.webhookUseCase.receive(new WebhookNotification(GatewayName.MERCADOPAGO, "n-1",
+                "req-1", PREAPPROVAL, null, "x".repeat(65), false, Map.of())))
+                .isInstanceOf(InvalidBillingRequestException.class);
+        assertThatThrownBy(() -> h.webhookUseCase.receive(new WebhookNotification(GatewayName.MERCADOPAGO, "n-1",
+                "r".repeat(129), PREAPPROVAL, null, "pre-1", false, Map.of())))
+                .isInstanceOf(InvalidBillingRequestException.class);
+        assertThatThrownBy(() -> h.webhookUseCase.receive(new WebhookNotification(GatewayName.MERCADOPAGO, "n-1",
+                "r".repeat(100), PREAPPROVAL, null, "x".repeat(60), false, Map.of())))
+                .isInstanceOf(InvalidBillingRequestException.class);
+
+        assertThat(h.webhookEvents.all()).isEmpty();
+    }
+
+    @Test
+    void theResultOfAProcessThatLostTheRaceDoesNotOverwriteTheOther() {
+        h.store(subscription().planId(pro.getId()).build());
+        h.gateway.readFailure = new IllegalStateException("MP caído");
+        WebhookEvent stored = WebhookEvent.received(new WebhookNotification(GatewayName.MERCADOPAGO, null, "req-1",
+                PREAPPROVAL, null, "pre-1", false, Map.of()), NOW);
+        h.webhookEvents.put(stored);
+        // Mientras este proceso llamaba a MP, el job de reintentos ya procesó la fila.
+        h.webhookEvents.overwritePersisted(stored.getId(), WebhookStatus.PROCESSED, 0);
+
+        h.webhookUseCase.process(stored, WebhookUseCase.WEBHOOK_ACTOR);
+
+        assertThat(h.webhookEvents.rejectedUpdates).isEqualTo(1);
+        assertThat(h.webhookEvents.updates).isZero();
     }
 }

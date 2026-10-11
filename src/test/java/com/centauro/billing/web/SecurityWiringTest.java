@@ -189,6 +189,56 @@ class SecurityWiringTest {
         verifyNoInteractions(webhookUseCase);
     }
 
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder signedWebhook(String dataId)
+            throws Exception {
+        String ts = String.valueOf(Instant.now().getEpochSecond());
+        String manifest = "id:" + dataId + ";request-id:req-1;ts:" + ts + ";";
+        return post("/webhooks/mercadopago").param("data.id", dataId).param("type", "payment")
+                .header("x-request-id", "req-1")
+                .header("x-signature", "ts=" + ts + ",v1=" + hmac(manifest))
+                .contentType(MediaType.APPLICATION_JSON);
+    }
+
+    @Test
+    void webhookWithoutDataIdInTheQueryIsABadRequestAndNotStored() throws Exception {
+        mvc.perform(post("/webhooks/mercadopago").header("x-request-id", "req-1")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"data\":{\"id\":\"123456\"}}"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(webhookUseCase);
+    }
+
+    @Test
+    void theOnlyResourceUsedIsTheSignedDataIdOfTheQuery() throws Exception {
+        mvc.perform(signedWebhook("123456").content("{\"id\":\"n-1\",\"data\":{\"id\":\"999999\"}}"))
+                .andExpect(status().isOk());
+
+        org.mockito.ArgumentCaptor<com.centauro.billing.domain.vo.WebhookNotification> captor =
+                org.mockito.ArgumentCaptor.forClass(com.centauro.billing.domain.vo.WebhookNotification.class);
+        verify(webhookUseCase).receive(captor.capture());
+        assertThat(captor.getValue().resourceId()).isEqualTo("123456");
+        assertThat(captor.getValue().requestId()).isEqualTo("req-1");
+    }
+
+    @Test
+    void invalidBodyWithAValidSignatureIsABadRequestAndNotStored() throws Exception {
+        mvc.perform(signedWebhook("123456").content("{no es json"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(webhookUseCase);
+    }
+
+    @Test
+    void bodyAboveTheLimitIsRejectedWith413() throws Exception {
+        String big = "{\"pad\":\"" + "x".repeat(70_000) + "\"}";
+
+        mvc.perform(signedWebhook("123456").content(big))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(jsonPath("$.code").value("PAYLOAD_TOO_LARGE"));
+
+        verifyNoInteractions(webhookUseCase);
+    }
+
     @Test
     void otherWebhookRoutesAndMethodsStayClosed() throws Exception {
         mvc.perform(get("/webhooks/mercadopago")).andExpect(status().isUnauthorized());

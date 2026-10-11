@@ -50,6 +50,8 @@ public class AppConfig {
     @Bean
     public GatewaySettings gatewaySettings(BillingProperties properties) {
         return new GatewaySettings(Duration.ofHours(properties.checkout().expirationHours()),
-                properties.checkout().backUrl(), properties.jobs().webhookMaxAttempts());
+                properties.checkout().backUrl(), properties.jobs().webhookMaxAttempts(),
+                properties.jobs().reconciliationMaxItems(),
+                Duration.ofMinutes(properties.jobs().reconciliationMaxMinutes()));
     }
 }

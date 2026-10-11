@@ -30,7 +30,7 @@ public interface CheckoutRepositoryPort {
     List<UUID> findExpiredPending(OffsetDateTime now, UUID afterId, int limit);
 
     /**
-     * Checkouts que ya no son el vigente (SUPERSEDED, EXPIRED, CANCELLED) pero tienen preapproval y se
+     * Checkouts que ya no son el vigente (SUPERSEDED, EXPIRED, CANCELLED, FAILED) pero tienen preapproval y se
      * tocaron después de {@code since}: la conciliación verifica que no hayan quedado autorizados en la pasarela.
      */
     List<UUID> findStaleWithPreapproval(OffsetDateTime since, UUID afterId, int limit);

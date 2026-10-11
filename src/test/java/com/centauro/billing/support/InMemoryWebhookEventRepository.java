@@ -6,16 +6,23 @@ import com.centauro.billing.domain.port.WebhookEventRepositoryPort;
 
 import java.time.OffsetDateTime;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+/** Guarda la misma instancia, pero recuerda el estado persistido para simular el UPDATE condicional. */
 public class InMemoryWebhookEventRepository implements WebhookEventRepositoryPort {
 
+    private record Stored(WebhookStatus status, int attempts) {
+    }
+
     private final Map<UUID, WebhookEvent> byId = new LinkedHashMap<>();
+    private final Map<UUID, Stored> persisted = new HashMap<>();
     public int updates;
+    public int rejectedUpdates;
 
     public List<WebhookEvent> all() {
         return List.copyOf(byId.values());
@@ -23,6 +30,12 @@ public class InMemoryWebhookEventRepository implements WebhookEventRepositoryPor
 
     public void put(WebhookEvent event) {
         byId.put(event.getId(), event);
+        persisted.put(event.getId(), new Stored(event.getStatus(), event.getAttempts()));
+    }
+
+    /** Simula que otro proceso actualizó la fila. */
+    public void overwritePersisted(UUID id, WebhookStatus status, int attempts) {
+        persisted.put(id, new Stored(status, attempts));
     }
 
     @Override
@@ -32,14 +45,20 @@ public class InMemoryWebhookEventRepository implements WebhookEventRepositoryPor
         if (duplicate) {
             return false;
         }
-        byId.put(event.getId(), event);
+        put(event);
         return true;
     }
 
     @Override
-    public void update(WebhookEvent event) {
+    public boolean update(WebhookEvent event, WebhookStatus expectedStatus, int expectedAttempts) {
+        Stored stored = persisted.get(event.getId());
+        if (stored == null || stored.status() != expectedStatus || stored.attempts() != expectedAttempts) {
+            rejectedUpdates++;
+            return false;
+        }
         updates++;
-        byId.put(event.getId(), event);
+        put(event);
+        return true;
     }
 
     @Override

@@ -5,7 +5,9 @@ import com.centauro.billing.domain.model.SubscriptionEvent;
 import com.centauro.billing.domain.port.SubscriptionEventRepositoryPort;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public class InMemoryEventRepository implements SubscriptionEventRepositoryPort {
@@ -25,6 +27,18 @@ public class InMemoryEventRepository implements SubscriptionEventRepositoryPort 
     @Override
     public List<SubscriptionEvent> findRecentBySubscriptionId(UUID subscriptionId, int limit) {
         return events.stream().filter(e -> e.subscriptionId().equals(subscriptionId)).limit(limit).toList();
+    }
+
+    @Override
+    public Optional<SubscriptionEvent> findByDedupeKey(UUID subscriptionId, String dedupeKey) {
+        return events.stream().filter(e -> e.subscriptionId().equals(subscriptionId)
+                && dedupeKey.equals(e.dedupeKey())).findFirst();
+    }
+
+    @Override
+    public Optional<SubscriptionEvent> findLatestByType(UUID subscriptionId, SubscriptionEventType type) {
+        return events.stream().filter(e -> e.subscriptionId().equals(subscriptionId) && e.type() == type)
+                .max(Comparator.comparing(SubscriptionEvent::occurredAt));
     }
 
     public List<SubscriptionEventType> types() {

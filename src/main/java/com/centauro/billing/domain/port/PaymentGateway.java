@@ -31,4 +31,10 @@ public interface PaymentGateway {
 
     /** Sin idempotencia del lado de la pasarela: cancelar algo ya cancelado puede fallar. */
     void cancel(String gatewaySubscriptionId);
+
+    /** Suspende los cobros sin cancelar la adhesión (suspensión administrativa). */
+    void pause(String gatewaySubscriptionId);
+
+    /** Reanuda una adhesión pausada. */
+    void resume(String gatewaySubscriptionId);
 }

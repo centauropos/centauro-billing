@@ -9,7 +9,9 @@ import com.centauro.billing.application.dto.SubscriptionListItem;
 import com.centauro.billing.application.dto.SuspendRequest;
 import com.centauro.billing.application.dto.TenantSubscriptionView;
 import com.centauro.billing.application.service.GatewayOperations;
+import com.centauro.billing.application.service.PaymentApplier;
 import com.centauro.billing.application.service.SubscriptionViewAssembler;
+import com.centauro.billing.domain.enums.PaymentStatus;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
 import com.centauro.billing.domain.enums.SuspendMode;
 import com.centauro.billing.domain.enums.SuspensionReason;
@@ -17,6 +19,7 @@ import com.centauro.billing.domain.exception.InvalidBillingRequestException;
 import com.centauro.billing.domain.exception.PlanNotFoundException;
 import com.centauro.billing.domain.exception.PlanWithoutPriceException;
 import com.centauro.billing.domain.exception.SubscriptionNotFoundException;
+import com.centauro.billing.domain.model.Payment;
 import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.PlanPrice;
 import com.centauro.billing.domain.model.Subscription;
@@ -38,6 +41,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.OffsetDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,6 +62,7 @@ public class PlatformSubscriptionUseCase {
     private final SubscriptionEventRepositoryPort events;
     private final CheckoutRepositoryPort checkouts;
     private final GatewayOperations gatewayOperations;
+    private final PaymentApplier paymentApplier;
     private final PeriodCalculator periodCalculator;
     private final SubscriptionViewAssembler assembler;
     private final Clock clock;
@@ -65,7 +70,7 @@ public class PlatformSubscriptionUseCase {
     public PlatformSubscriptionUseCase(SubscriptionRepositoryPort subscriptions, PlanRepositoryPort plans,
                                        PaymentRepositoryPort payments, SubscriptionEventRepositoryPort events,
                                        CheckoutRepositoryPort checkouts, GatewayOperations gatewayOperations,
-                                       PeriodCalculator periodCalculator, SubscriptionViewAssembler assembler,
+                                       PaymentApplier paymentApplier, PeriodCalculator periodCalculator, SubscriptionViewAssembler assembler,
                                        Clock clock) {
         this.subscriptions = subscriptions;
         this.plans = plans;
@@ -73,6 +78,7 @@ public class PlatformSubscriptionUseCase {
         this.events = events;
         this.checkouts = checkouts;
         this.gatewayOperations = gatewayOperations;
+        this.paymentApplier = paymentApplier;
         this.periodCalculator = periodCalculator;
         this.assembler = assembler;
         this.clock = clock;
@@ -170,17 +176,65 @@ public class PlatformSubscriptionUseCase {
         SuspensionReason reason = request.mode() == SuspendMode.BLOCKED
                 ? SuspensionReason.ADMIN_BLOCK : SuspensionReason.ADMIN_READ_ONLY;
         SubscriptionEvent event = subscription.suspendByAdmin(reason, actor, request.reason(), now);
-        return persist(subscription, event, now);
+        TenantSubscriptionView view = persist(subscription, event, now);
+        gatewayOperations.pauseQuietlyAfterCommit(subscription);
+        return view;
     }
 
+    /**
+     * Levanta la suspensión o la baja y aplica, en orden de cobro, los pagos aprobados que quedaron sin aplicar
+     * (los cobros recibidos durante la suspensión administrativa). Se excluyen los de un débito reemplazado y los
+     * de importe menor: esos los decide el admin. Cada pago extiende el período desde el fin anterior.
+     *
+     * <p>{@code currentPeriodEnd} es opcional si hay pagos para aplicar: el primero abre el período desde hoy.
+     * Si viene, fija el fin y los pagos se suman a continuación. Si la suspensión era administrativa, el débito
+     * de la pasarela se reanuda después del commit.
+     */
     @Transactional
     public TenantSubscriptionView reactivate(String tenantId, ReactivateRequest request, Actor actor) {
         OffsetDateTime now = OffsetDateTime.now(clock);
         Subscription subscription = lock(tenantId);
+        boolean adminSuspended = subscription.isAdminSuspended();
+        List<Payment> pending = pendingPayments(subscription);
         OffsetDateTime newEnd = request.currentPeriodEnd();
-        int anchorDay = newEnd == null ? 1 : periodCalculator.dayOf(newEnd);
+        PeriodCalculator.Period firstPeriod = null;
+        if (newEnd == null) {
+            if (pending.isEmpty()) {
+                throw new InvalidBillingRequestException(
+                        "Indicar currentPeriodEnd: no hay pagos sin aplicar que cubran el período");
+            }
+            firstPeriod = periodCalculator.nextPeriod(subscription, now, null);
+            newEnd = firstPeriod.end();
+        }
+        int anchorDay = firstPeriod != null ? firstPeriod.anchorDay() : periodCalculator.dayOf(newEnd);
         SubscriptionEvent event = subscription.reactivate(newEnd, anchorDay, actor, request.reason(), now);
-        return persist(subscription, event, now);
+        subscription = subscriptions.save(subscription);
+        events.append(event);
+        for (Payment payment : pending) {
+            PeriodCalculator.Period period = firstPeriod != null ? firstPeriod
+                    : periodCalculator.nextPeriod(subscription, now, null);
+            firstPeriod = null;
+            Payment saved = payments.save(payment.withPeriod(period.start(), period.end()));
+            subscription = paymentApplier.apply(subscription, saved, period.anchorDay(), subscription.getGateway(),
+                    actor, "Pago sin aplicar, aplicado al reactivar", now).subscription();
+        }
+        if (adminSuspended) {
+            gatewayOperations.resumeQuietlyAfterCommit(subscription);
+        }
+        return tenantView(subscription, now);
+    }
+
+    private List<Payment> pendingPayments(Subscription subscription) {
+        return payments.findBySubscriptionId(subscription.getId()).stream()
+                .filter(p -> p.status() == PaymentStatus.APPROVED && !p.applied())
+                .filter(p -> p.gatewayPaymentId() == null || (
+                        events.findByDedupeKey(subscription.getId(),
+                                "PAYMENT_FROM_SUPERSEDED_DEBIT:" + p.gatewayPaymentId()).isEmpty()
+                        && events.findByDedupeKey(subscription.getId(),
+                                "PAYMENT_AMOUNT_MISMATCH:" + p.gatewayPaymentId()).isEmpty()))
+                .sorted(Comparator.comparing((Payment p) -> p.paidAt() == null ? p.createdAt() : p.paidAt())
+                        .thenComparing(Payment::createdAt))
+                .toList();
     }
 
     @Transactional

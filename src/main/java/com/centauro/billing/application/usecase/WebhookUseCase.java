@@ -53,8 +53,14 @@ public class WebhookUseCase {
 
     /** Devuelve false si la notificación ya se había recibido. Solo falla si no se pudo guardar. */
     public boolean receive(WebhookNotification notification) {
-        if (notification.dedupeKey() == null) {
-            throw new InvalidBillingRequestException("Notificación sin id ni x-request-id");
+        String dedupeKey = notification.dedupeKey();
+        if (dedupeKey == null) {
+            throw new InvalidBillingRequestException("Notificación sin data.id o sin x-request-id");
+        }
+        if (dedupeKey.length() > WebhookNotification.MAX_DEDUPE_KEY_LENGTH
+                || notification.requestId().length() > WebhookNotification.MAX_REQUEST_ID_LENGTH
+                || notification.resourceId().length() > WebhookNotification.MAX_RESOURCE_ID_LENGTH) {
+            throw new InvalidBillingRequestException("data.id o x-request-id demasiado largos");
         }
         WebhookEvent event = WebhookEvent.received(notification, OffsetDateTime.now(clock));
         if (!webhookEvents.insertIfAbsent(event)) {
@@ -67,6 +73,8 @@ public class WebhookUseCase {
 
     /** Procesa (o reprocesa) un evento guardado. Idempotente: el mismo estado aplicado dos veces no cambia nada. */
     public WebhookStatus process(WebhookEvent event, Actor actor) {
+        WebhookStatus readStatus = event.getStatus();
+        int readAttempts = event.getAttempts();
         try {
             GatewaySyncService.Outcome outcome = handle(event, actor);
             OffsetDateTime now = OffsetDateTime.now(clock);
@@ -87,7 +95,9 @@ public class WebhookUseCase {
                         event.getResourceId(), event.getAttempts(), event.getNextAttemptAt(), event.getLastError());
             }
         }
-        webhookEvents.update(event);
+        if (!webhookEvents.update(event, readStatus, readAttempts)) {
+            log.info("Webhook {}: otro proceso lo actualizó mientras tanto; se conserva su resultado", event.getId());
+        }
         return event.getStatus();
     }
 

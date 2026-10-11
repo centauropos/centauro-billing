@@ -2,6 +2,8 @@ package com.centauro.billing.infrastructure.mercadopago;
 
 import com.centauro.billing.domain.enums.WebhookSignatureResult;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -10,8 +12,10 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.HexFormat;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class MercadoPagoSignatureVerifierTest {
 
@@ -113,25 +117,75 @@ class MercadoPagoSignatureVerifierTest {
     }
 
     @Test
-    void unsignedRequestsPassOnlyWhenSignatureIsExplicitlyNotRequired() {
-        assertThat(verifier().requireSignature(false).build().verify(null, "r", "1"))
+    void withASecretTheSignatureIsAlwaysRequiredEvenIfTheFlagIsOff() {
+        MercadoPagoSignatureVerifier verifier = verifier().requireSignature(false).build();
+
+        assertThat(verifier.verify(null, "r", "1")).isEqualTo(WebhookSignatureResult.MALFORMED);
+        assertThat(verifier.verify("ts=1,v1=00", "r", "1")).isEqualTo(WebhookSignatureResult.INVALID);
+        assertThat(verifier.verify(header(TS, "1", "r", SECRET), "r", "1")).isEqualTo(WebhookSignatureResult.VALID);
+    }
+
+    @Test
+    void unsignedRequestsPassOnlyWithoutSecretAndWithTheFlagOff() {
+        assertThat(verifier().secret(null).requireSignature(false).build().verify(null, "r", "1"))
                 .isEqualTo(WebhookSignatureResult.VALID);
-        assertThat(verifier().requireSignature(false).build().verify("ts=1,v1=00", "r", "1"))
-                .isEqualTo(WebhookSignatureResult.INVALID);
+    }
+
+    @Test
+    void unsignedModeIsRefusedWithAProductionAccessToken() {
+        assertThatThrownBy(() -> verifier().secret(null).requireSignature(false).token("APP_USR-123-abc").build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("MP_WEBHOOK_REQUIRE_SIGNATURE");
+        assertThat(verifier().secret(null).requireSignature(false).token("TEST-123-abc").build()).isNotNull();
+        assertThat(verifier().token("APP_USR-123-abc").build()).isNotNull();
+    }
+
+    @Test
+    void timestampsAboveTenToTheTwelfthAreMilliseconds() {
+        assertThat(MercadoPagoSignatureVerifier.epochSeconds(TS)).isEqualTo(TS);
+        assertThat(MercadoPagoSignatureVerifier.epochSeconds(TS * 1000)).isEqualTo(TS);
+        assertThat(MercadoPagoSignatureVerifier.epochSeconds(1_000_000_000_000L)).isEqualTo(1_000_000_000_000L);
+    }
+
+    @Test
+    void replayOfAnOldSignedNotificationIsExpiredWithTheDefaultWindow() {
+        String replayed = header(TS - 301, "123456", "req-1", SECRET);
+
+        assertThat(defaults().verify(replayed, "req-1", "123456")).isEqualTo(WebhookSignatureResult.EXPIRED);
+        assertThat(defaults().verify(header(TS - 200, "123456", "req-1", SECRET), "req-1", "123456"))
+                .isEqualTo(WebhookSignatureResult.VALID);
+    }
+
+    @Test
+    void defaultsRequireSignatureWithFiveMinutesOfSkewAndSixtyFourKilobytes() {
+        MercadoPagoProperties.Webhook webhook = new Binder(new MapConfigurationPropertySource(
+                Map.of("billing.mercadopago.base-url", "https://api.mp.test")))
+                .bind("billing.mercadopago", MercadoPagoProperties.class).get().webhook();
+
+        assertThat(webhook.requireSignature()).isTrue();
+        assertThat(webhook.maxSkewSeconds()).isEqualTo(300);
+        assertThat(webhook.maxBodyBytes()).isEqualTo(65536);
+    }
+
+    /** Skew por defecto: el {@code ts} de los headers es 60 s anterior al reloj. */
+    private static MercadoPagoSignatureVerifier defaults() {
+        return verifier().maxSkew(300).build();
     }
 
     private static final class MercadoPagoVerifierBuilder {
         private String secret = SECRET;
+        private String token = "token";
         private boolean requireSignature = true;
         private long maxSkew;
 
         MercadoPagoVerifierBuilder secret(String value) { secret = value; return this; }
+        MercadoPagoVerifierBuilder token(String value) { token = value; return this; }
         MercadoPagoVerifierBuilder requireSignature(boolean value) { requireSignature = value; return this; }
         MercadoPagoVerifierBuilder maxSkew(long value) { maxSkew = value; return this; }
 
         MercadoPagoSignatureVerifier build() {
-            return new MercadoPagoSignatureVerifier(new MercadoPagoProperties("https://api.mp.test", "token", secret,
-                    new MercadoPagoProperties.Webhook(requireSignature, maxSkew), 1000, 1000), CLOCK);
+            return new MercadoPagoSignatureVerifier(new MercadoPagoProperties("https://api.mp.test", token, secret,
+                    new MercadoPagoProperties.Webhook(requireSignature, maxSkew, 65536), 1000, 1000), CLOCK);
         }
     }
 }

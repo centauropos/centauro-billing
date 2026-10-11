@@ -36,6 +36,23 @@ public interface WebhookEventJpaRepository extends JpaRepository<WebhookEventEnt
                        @Param("nextAttemptAt") OffsetDateTime nextAttemptAt,
                        @Param("receivedAt") OffsetDateTime receivedAt);
 
+    @Modifying
+    @Query(value = """
+            UPDATE webhook_events
+            SET status = :status, attempts = :attempts, last_error = CAST(:lastError AS TEXT),
+                next_attempt_at = CAST(:nextAttemptAt AS TIMESTAMPTZ),
+                processed_at = CAST(:processedAt AS TIMESTAMPTZ)
+            WHERE id = :id AND status = :expectedStatus AND attempts = :expectedAttempts
+            """, nativeQuery = true)
+    int updateIfUnchanged(@Param("id") UUID id,
+                          @Param("status") String status,
+                          @Param("attempts") int attempts,
+                          @Param("lastError") String lastError,
+                          @Param("nextAttemptAt") OffsetDateTime nextAttemptAt,
+                          @Param("processedAt") OffsetDateTime processedAt,
+                          @Param("expectedStatus") String expectedStatus,
+                          @Param("expectedAttempts") int expectedAttempts);
+
     @Query(value = """
             SELECT id FROM webhook_events
             WHERE status IN ('RECEIVED', 'FAILED') AND next_attempt_at <= :now AND attempts < :maxAttempts

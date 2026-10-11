@@ -41,7 +41,7 @@ public interface GatewayCheckoutJpaRepository extends JpaRepository<GatewayCheck
 
     @Query(value = """
             SELECT id FROM gateway_checkouts
-            WHERE status IN ('SUPERSEDED', 'EXPIRED', 'CANCELLED') AND gateway_preapproval_id IS NOT NULL
+            WHERE status IN ('SUPERSEDED', 'EXPIRED', 'CANCELLED', 'FAILED') AND gateway_preapproval_id IS NOT NULL
               AND updated_at >= :since AND id > :afterId
             ORDER BY id
             LIMIT :limit

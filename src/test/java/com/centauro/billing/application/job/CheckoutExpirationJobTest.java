@@ -2,14 +2,19 @@ package com.centauro.billing.application.job;
 
 import com.centauro.billing.application.dto.CheckoutRequest;
 import com.centauro.billing.domain.enums.CheckoutStatus;
+import com.centauro.billing.domain.enums.GatewayName;
+import com.centauro.billing.domain.enums.GatewaySubscriptionStatus;
 import com.centauro.billing.domain.model.GatewayCheckout;
+import com.centauro.billing.domain.model.Subscription;
 import com.centauro.billing.domain.vo.Actor;
+import com.centauro.billing.domain.vo.WebhookNotification;
 import com.centauro.billing.support.GatewayHarness;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.util.Map;
 import java.util.UUID;
 
 import static com.centauro.billing.support.TestFixtures.NOW;
@@ -38,7 +43,69 @@ class CheckoutExpirationJobTest {
 
     private CheckoutExpirationJob jobAt(OffsetDateTime now, int batchSize) {
         return new CheckoutExpirationJob(h.checkouts, new CheckoutExpirationProcessor(h.checkouts),
-                h.gatewayOperations, lock, clockAt(now), batchSize);
+                h.gatewayOperations, h.sync, lock, clockAt(now), batchSize);
+    }
+
+    @Test
+    void preapprovalAuthorizedJustBeforeExpiringIsLinkedInsteadOfCanceled() {
+        UUID id = checkoutFor("t1");
+        String preapprovalId = checkout(id).getGatewayPreapprovalId();
+        // El pagador autorizó, pero el webhook todavía no llegó cuando corre el job.
+        h.preapproval(preapprovalId, GatewaySubscriptionStatus.AUTHORIZED, id, new BigDecimal("59900"), NOW);
+
+        jobAt(NOW.plusHours(25), 100).run();
+
+        assertThat(h.gateway.canceled).isEmpty();
+        Subscription s = h.subscriptions.findByTenantId("t1").orElseThrow();
+        assertThat(s.getGatewaySubscriptionId()).isEqualTo(preapprovalId);
+        assertThat(checkout(id).getStatus()).isEqualTo(CheckoutStatus.AUTHORIZED);
+
+        // El webhook llega después: el preapproval ya es el vigente y no cambia nada.
+        h.webhookUseCase.receive(new WebhookNotification(GatewayName.MERCADOPAGO, null, "req-late",
+                "subscription_preapproval", "updated", preapprovalId, true, Map.of()));
+        assertThat(h.gateway.canceled).isEmpty();
+        assertThat(h.subscriptions.findByTenantId("t1").orElseThrow().getGatewaySubscriptionId())
+                .isEqualTo(preapprovalId);
+    }
+
+    @Test
+    void whenTheWebhookWinsTheRaceTheJobLeavesTheCheckoutAlone() {
+        UUID id = checkoutFor("t1");
+        String preapprovalId = checkout(id).getGatewayPreapprovalId();
+        h.preapproval(preapprovalId, GatewaySubscriptionStatus.AUTHORIZED, id, new BigDecimal("59900"), NOW);
+        h.webhookUseCase.receive(new WebhookNotification(GatewayName.MERCADOPAGO, null, "req-1",
+                "subscription_preapproval", "updated", preapprovalId, true, Map.of()));
+
+        jobAt(NOW.plusHours(25), 100).run();
+
+        assertThat(checkout(id).getStatus()).isEqualTo(CheckoutStatus.AUTHORIZED);
+        assertThat(h.gateway.canceled).isEmpty();
+    }
+
+    @Test
+    void neverCancelsThePreapprovalLinkedToTheSubscription() {
+        UUID id = checkoutFor("t1");
+        String preapprovalId = checkout(id).getGatewayPreapprovalId();
+        Subscription s = h.subscriptions.findByTenantId("t1").orElseThrow();
+        s.linkGatewaySubscription(GatewayName.MERCADOPAGO, preapprovalId, NOW, null, s.getPlanId(),
+                new BigDecimal("59900"), null, Actor.job("test"), NOW);
+        h.preapproval(preapprovalId, GatewaySubscriptionStatus.PAUSED, id, new BigDecimal("59900"), NOW);
+
+        jobAt(NOW.plusHours(25), 100).run();
+
+        assertThat(checkout(id).getStatus()).isEqualTo(CheckoutStatus.EXPIRED);
+        assertThat(h.gateway.canceled).isEmpty();
+    }
+
+    @Test
+    void ifThePreapprovalCannotBeQueriedNothingIsCanceled() {
+        UUID id = checkoutFor("t1");
+        h.gateway.readFailure = new IllegalStateException("MP caído");
+
+        jobAt(NOW.plusHours(25), 100).run();
+
+        assertThat(checkout(id).getStatus()).isEqualTo(CheckoutStatus.EXPIRED);
+        assertThat(h.gateway.canceled).isEmpty();
     }
 
     private GatewayCheckout checkout(UUID id) {

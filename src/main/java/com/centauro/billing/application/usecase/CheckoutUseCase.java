@@ -8,6 +8,8 @@ import com.centauro.billing.application.service.GatewaySettings;
 import com.centauro.billing.application.service.SubscriptionViewAssembler;
 import com.centauro.billing.domain.exception.BillingException;
 import com.centauro.billing.domain.exception.CheckoutNotAllowedException;
+import com.centauro.billing.domain.exception.GatewayRejectedException;
+import com.centauro.billing.domain.exception.GatewayTimeoutException;
 import com.centauro.billing.domain.exception.GatewayUnavailableException;
 import com.centauro.billing.domain.model.GatewayCheckout;
 import com.centauro.billing.domain.model.Plan;
@@ -33,6 +35,8 @@ import java.util.UUID;
  */
 @Service
 public class CheckoutUseCase {
+
+    static final String GATEWAY_ERROR_MESSAGE = "No se pudo iniciar el pago con Mercado Pago";
 
     private static final Logger log = LoggerFactory.getLogger(CheckoutUseCase.class);
 
@@ -73,10 +77,9 @@ public class CheckoutUseCase {
                     backUrl(checkout.getId())));
         } catch (RuntimeException e) {
             markFailed(checkout.getId());
-            if (e instanceof BillingException) {
-                throw e;
-            }
-            throw new GatewayUnavailableException("No se pudo crear el checkout en la pasarela");
+            // El detalle de MP (ya enmascarado por el adaptador) va solo al log; al tenant, un mensaje genérico.
+            log.warn("Checkout {}: Mercado Pago no creó el preapproval: {}", checkout.getId(), e.getMessage());
+            throw genericGatewayError(e);
         }
 
         GatewayCheckout attached = transactions.attach(checkout.getId(), result, OffsetDateTime.now(clock));
@@ -87,6 +90,17 @@ public class CheckoutUseCase {
         log.info("Checkout {} creado para el tenant {} (preapproval {}) por {}", attached.getId(), tenantId,
                 result.gatewaySubscriptionId(), actor.logId());
         return view(attached, prepared.plan(), false);
+    }
+
+    /** Conserva el tipo (422, 502 o 504) y reemplaza el mensaje. */
+    static BillingException genericGatewayError(RuntimeException e) {
+        if (e instanceof GatewayRejectedException) {
+            return new GatewayRejectedException(GATEWAY_ERROR_MESSAGE);
+        }
+        if (e instanceof GatewayTimeoutException) {
+            return new GatewayTimeoutException(GATEWAY_ERROR_MESSAGE);
+        }
+        return new GatewayUnavailableException(GATEWAY_ERROR_MESSAGE);
     }
 
     private void markFailed(UUID checkoutId) {

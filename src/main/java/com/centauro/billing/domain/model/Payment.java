@@ -67,6 +67,12 @@ public record Payment(
                 createdAt);
     }
 
+    public Payment withNotes(String newNotes) {
+        return new Payment(id, subscriptionId, tenantId, source, status, amount, currency, gatewayPaymentId,
+                gatewayChargeId, gatewayStatus, periodStart, periodEnd, paidAt, applied, reference, newNotes,
+                registeredBy, createdAt);
+    }
+
     public Payment markApplied() {
         return new Payment(id, subscriptionId, tenantId, source, status, amount, currency, gatewayPaymentId,
                 gatewayChargeId, gatewayStatus, periodStart, periodEnd, paidAt, true, reference, notes,

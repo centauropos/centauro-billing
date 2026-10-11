@@ -1,7 +1,9 @@
 package com.centauro.billing.web.exception;
 
 import com.centauro.billing.domain.exception.BillingException;
+import com.centauro.billing.domain.exception.CheckoutInProgressException;
 import com.centauro.billing.domain.exception.CheckoutNotAllowedException;
+import com.centauro.billing.domain.exception.CheckoutPlanRequiresContactException;
 import com.centauro.billing.domain.exception.DuplicatePaymentException;
 import com.centauro.billing.domain.exception.DuplicatePlanException;
 import com.centauro.billing.domain.exception.DuplicatePlanPriceException;
@@ -20,6 +22,7 @@ import com.centauro.billing.domain.exception.PriceAlreadyEffectiveException;
 import com.centauro.billing.domain.exception.SamePlanException;
 import com.centauro.billing.domain.exception.SubscriptionAdminSuspendedException;
 import com.centauro.billing.domain.exception.SubscriptionNotFoundException;
+import com.centauro.billing.domain.exception.WebhookPayloadTooLargeException;
 import com.centauro.billing.domain.policy.BillingTerms;
 import com.centauro.billing.web.filter.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
@@ -65,6 +68,9 @@ public class GlobalExceptionHandler {
             Map.entry(SamePlanException.class, HttpStatus.CONFLICT),
             Map.entry(PriceAlreadyEffectiveException.class, HttpStatus.CONFLICT),
             Map.entry(SubscriptionAdminSuspendedException.class, HttpStatus.CONFLICT),
+            Map.entry(CheckoutInProgressException.class, HttpStatus.CONFLICT),
+            Map.entry(CheckoutPlanRequiresContactException.class, HttpStatus.CONFLICT),
+            Map.entry(WebhookPayloadTooLargeException.class, HttpStatus.PAYLOAD_TOO_LARGE),
             Map.entry(PlanWithoutPriceException.class, HttpStatus.UNPROCESSABLE_ENTITY),
             Map.entry(PlanCustomPricingException.class, HttpStatus.UNPROCESSABLE_ENTITY),
             Map.entry(PlanRequiresContactException.class, HttpStatus.UNPROCESSABLE_ENTITY),

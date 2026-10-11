@@ -1,5 +1,6 @@
 package com.centauro.billing.infrastructure.adapter;
 
+import com.centauro.billing.domain.enums.WebhookStatus;
 import com.centauro.billing.domain.model.WebhookEvent;
 import com.centauro.billing.domain.port.WebhookEventRepositoryPort;
 import com.centauro.billing.infrastructure.jpa.entity.WebhookEventEntity;
@@ -16,8 +17,10 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Las escrituras van en una transacción propia ({@code REQUIRES_NEW}): el job de reintentos corre dentro de la
- * transacción que retiene el advisory lock, y un error acá no tiene que marcarla para rollback.
+ * Las escrituras van en una transacción propia ({@code REQUIRES_NEW}): un error acá no tiene que marcar para
+ * rollback una transacción del llamador. {@code dedupe_key}, {@code request_id} y {@code resource_id} llegan ya
+ * validados contra el largo de la columna ({@code WebhookUseCase}); los campos del cuerpo, que no están firmados,
+ * se recortan.
  */
 @Component
 public class WebhookEventRepositoryAdapter implements WebhookEventRepositoryPort {
@@ -39,23 +42,18 @@ public class WebhookEventRepositoryAdapter implements WebhookEventRepositoryPort
         } catch (JsonProcessingException ex) {
             throw new IllegalArgumentException("Payload de webhook no serializable", ex);
         }
-        return repository.insertIfAbsent(e.getId(), e.getProvider().name(), cut(e.getDedupeKey(), 150),
-                cut(e.getNotificationId(), 64), cut(e.getRequestId(), 128), cut(e.getTopic(), 60),
-                cut(e.getAction(), 60), cut(e.getResourceId(), 64), e.getLiveMode(), payload, e.getNextAttemptAt(),
+        return repository.insertIfAbsent(e.getId(), e.getProvider().name(), e.getDedupeKey(),
+                cut(e.getNotificationId(), 64), e.getRequestId(), cut(e.getTopic(), 60),
+                cut(e.getAction(), 60), e.getResourceId(), e.getLiveMode(), payload, e.getNextAttemptAt(),
                 e.getReceivedAt()) > 0;
     }
 
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void update(WebhookEvent e) {
-        WebhookEventEntity entity = repository.findById(e.getId())
-                .orElseThrow(() -> new IllegalStateException("Evento de webhook inexistente: " + e.getId()));
-        entity.setStatus(e.getStatus());
-        entity.setAttempts(e.getAttempts());
-        entity.setLastError(e.getLastError());
-        entity.setNextAttemptAt(e.getNextAttemptAt());
-        entity.setProcessedAt(e.getProcessedAt());
-        repository.save(entity);
+    public boolean update(WebhookEvent e, WebhookStatus expectedStatus, int expectedAttempts) {
+        return repository.updateIfUnchanged(e.getId(), e.getStatus().name(), e.getAttempts(),
+                e.getLastError(), e.getNextAttemptAt(), e.getProcessedAt(),
+                expectedStatus.name(), expectedAttempts) > 0;
     }
 
     @Override

@@ -1,5 +1,6 @@
 package com.centauro.billing.domain.port;
 
+import com.centauro.billing.domain.enums.WebhookStatus;
 import com.centauro.billing.domain.model.WebhookEvent;
 
 import java.time.OffsetDateTime;
@@ -15,8 +16,12 @@ public interface WebhookEventRepositoryPort {
      */
     boolean insertIfAbsent(WebhookEvent event);
 
-    /** Persiste estado, intentos y error en su propia transacción. */
-    void update(WebhookEvent event);
+    /**
+     * Persiste estado, intentos y error en su propia transacción, solo si la fila sigue con
+     * {@code expectedStatus} y {@code expectedAttempts} (lo que se leyó antes de procesar): el webhook y el job de
+     * reintentos no se pisan. Devuelve false si otro proceso la actualizó antes.
+     */
+    boolean update(WebhookEvent event, WebhookStatus expectedStatus, int expectedAttempts);
 
     Optional<WebhookEvent> findById(UUID id);
 

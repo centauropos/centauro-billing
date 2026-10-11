@@ -36,7 +36,7 @@ class WebhookRetryJobTest {
 
     private WebhookEvent stored(String notificationId, String resourceId) {
         WebhookEvent event = WebhookEvent.received(new WebhookNotification(GatewayName.MERCADOPAGO, notificationId,
-                null, "subscription_preapproval", "updated", resourceId, false, Map.of()), NOW);
+                "req-" + notificationId, "subscription_preapproval", "updated", resourceId, false, Map.of()), NOW);
         h.webhookEvents.put(event);
         return event;
     }
@@ -44,15 +44,18 @@ class WebhookRetryJobTest {
     @Test
     void reprocessesReceivedAndFailedEventsThatAreDue() {
         h.store(subscription().gatewaySubscriptionId("pre-9").gatewayStatus("authorized").build());
+        h.store(subscription().tenantId("t-8").gatewaySubscriptionId("pre-8").gatewayStatus("authorized").build());
         h.preapproval("pre-9", GatewaySubscriptionStatus.PAUSED, null, new BigDecimal("25000"), NOW);
+        h.preapproval("pre-8", GatewaySubscriptionStatus.PAUSED, null, new BigDecimal("25000"), NOW);
         WebhookEvent received = stored("n-1", "pre-9");
-        WebhookEvent failed = stored("n-2", "pre-9");
+        WebhookEvent failed = stored("n-2", "pre-8");
         failed.markFailed("MP caído", NOW);
+        h.webhookEvents.put(failed);
 
         assertThat(jobAt(h, NOW.plusMinutes(10)).run()).isTrue();
 
         assertThat(received.getStatus()).isEqualTo(WebhookStatus.PROCESSED);
-        assertThat(failed.getStatus()).isIn(WebhookStatus.PROCESSED, WebhookStatus.IGNORED);
+        assertThat(failed.getStatus()).isEqualTo(WebhookStatus.PROCESSED);
         assertThat(lock.keys).containsExactly(WebhookRetryJob.LOCK_KEY);
     }
 
@@ -85,7 +88,7 @@ class WebhookRetryJobTest {
     @Test
     void withoutGatewayDoesNotRunNorSpendAttempts() {
         GatewayHarness noGateway = new GatewayHarness(false, GatewayHarness.BACK_URL);
-        WebhookEvent event = WebhookEvent.received(new WebhookNotification(GatewayName.MERCADOPAGO, "n-1", null,
+        WebhookEvent event = WebhookEvent.received(new WebhookNotification(GatewayName.MERCADOPAGO, "n-1", "req-1",
                 "subscription_preapproval", null, "pre-9", false, Map.of()), NOW);
         noGateway.webhookEvents.put(event);
 

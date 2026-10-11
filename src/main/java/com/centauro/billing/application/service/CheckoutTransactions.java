@@ -1,10 +1,11 @@
 package com.centauro.billing.application.service;
 
 import com.centauro.billing.domain.enums.SubscriptionStatus;
+import com.centauro.billing.domain.exception.CheckoutInProgressException;
 import com.centauro.billing.domain.exception.CheckoutNotAllowedException;
+import com.centauro.billing.domain.exception.CheckoutPlanRequiresContactException;
 import com.centauro.billing.domain.exception.InvalidBillingRequestException;
 import com.centauro.billing.domain.exception.PlanNotFoundException;
-import com.centauro.billing.domain.exception.PlanRequiresContactException;
 import com.centauro.billing.domain.exception.PlanWithoutPriceException;
 import com.centauro.billing.domain.exception.SubscriptionNotFoundException;
 import com.centauro.billing.domain.model.AccessDecision;
@@ -22,6 +23,7 @@ import com.centauro.billing.domain.vo.RecurringCheckoutResult;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
@@ -39,6 +41,8 @@ public class CheckoutTransactions {
     private final CheckoutRepositoryPort checkouts;
     private final AccessPolicy accessPolicy;
     private final AllowedActionsPolicy allowedActionsPolicy;
+    static final Duration IN_PROGRESS_WINDOW = Duration.ofSeconds(30);
+
     private final GatewaySettings settings;
 
     public CheckoutTransactions(SubscriptionRepositoryPort subscriptions, PlanRepositoryPort plans,
@@ -64,7 +68,7 @@ public class CheckoutTransactions {
                 .filter(Plan::isOfferable)
                 .orElseThrow(() -> new PlanNotFoundException(planCode));
         if (plan.isCustomPricing()) {
-            throw new PlanRequiresContactException(planCode);
+            throw new CheckoutPlanRequiresContactException(planCode);
         }
         PlanPrice price = plan.currentPrice(now).orElseThrow(() -> new PlanWithoutPriceException(planCode));
         AccessDecision decision = accessPolicy.evaluate(subscription, now);
@@ -83,6 +87,9 @@ public class CheckoutTransactions {
         Optional<GatewayCheckout> pending = checkouts.findPendingBySubscriptionId(subscription.getId());
         if (pending.isPresent()) {
             GatewayCheckout current = pending.get();
+            if (isInProgress(current, plan, now)) {
+                throw new CheckoutInProgressException();
+            }
             if (current.isUsable(now) && current.matches(plan.getId(), price.amount(), email)) {
                 return new Prepared(current, plan, true, null);
             }
@@ -97,6 +104,15 @@ public class CheckoutTransactions {
         GatewayCheckout checkout = GatewayCheckout.create(subscription, plan.getId(), price.amount(), email,
                 startDate(subscription, decision, now), now.plus(settings.checkoutExpiration()), actor.name(), now);
         return new Prepared(checkouts.save(checkout), plan, false, superseded);
+    }
+
+    /**
+     * Doble click: un PENDING del mismo plan, todavía sin {@code init_point} y creado hace menos de
+     * {@link #IN_PROGRESS_WINDOW}, es otro pedido que está llamando a MP. No se reemplaza: 409.
+     */
+    private static boolean isInProgress(GatewayCheckout pending, Plan plan, OffsetDateTime now) {
+        return pending.getInitPoint() == null && pending.getPlanId().equals(plan.getId())
+                && pending.getCreatedAt() != null && pending.getCreatedAt().isAfter(now.minus(IN_PROGRESS_WINDOW));
     }
 
     /** Devuelve el checkout tal como quedó: si ya no está PENDING, otro pedido lo reemplazó mientras tanto. */

@@ -75,7 +75,7 @@ public class InMemoryCheckoutRepository implements CheckoutRepositoryPort {
     @Override
     public List<UUID> findStaleWithPreapproval(OffsetDateTime since, UUID afterId, int limit) {
         Set<CheckoutStatus> stale = EnumSet.of(CheckoutStatus.SUPERSEDED, CheckoutStatus.EXPIRED,
-                CheckoutStatus.CANCELLED);
+                CheckoutStatus.CANCELLED, CheckoutStatus.FAILED);
         return ids(c -> stale.contains(c.getStatus()) && c.getGatewayPreapprovalId() != null
                 && !c.getUpdatedAt().isBefore(since), afterId, limit);
     }

@@ -6,7 +6,10 @@ import com.centauro.billing.application.dto.TenantSubscriptionView;
 import com.centauro.billing.domain.enums.CheckoutStatus;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
 import com.centauro.billing.domain.enums.SuspensionReason;
+import com.centauro.billing.domain.exception.CheckoutInProgressException;
 import com.centauro.billing.domain.exception.CheckoutNotAllowedException;
+import com.centauro.billing.domain.exception.CheckoutPlanRequiresContactException;
+import com.centauro.billing.domain.exception.GatewayRejectedException;
 import com.centauro.billing.domain.exception.GatewayTimeoutException;
 import com.centauro.billing.domain.exception.GatewayUnavailableException;
 import com.centauro.billing.domain.exception.PlanNotFoundException;
@@ -102,10 +105,58 @@ class CheckoutUseCaseTest {
     }
 
     @Test
+    void doubleClickWhileTheFirstCheckoutIsBeingCreatedIsAConflict() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        // El primer pedido ya guardó el checkout PENDING pero todavía no volvió de MP (sin init_point).
+        GatewayCheckout inFlight = h.checkouts.save(GatewayCheckout.create(s, pro.getId(), new BigDecimal("59900"),
+                "owner@test.com", null, NOW.plusHours(24), "owner", NOW.minusSeconds(10)));
+
+        assertThatThrownBy(() -> start("PROFESIONAL")).isInstanceOf(CheckoutInProgressException.class)
+                .extracting("code").isEqualTo("CHECKOUT_IN_PROGRESS");
+
+        assertThat(h.checkouts.findById(inFlight.getId()).orElseThrow().getStatus())
+                .isEqualTo(CheckoutStatus.PENDING);
+        assertThat(h.gateway.created).isEmpty();
+        assertThat(h.gateway.canceled).isEmpty();
+    }
+
+    @Test
+    void anOldCheckoutWithoutInitPointOrForAnotherPlanIsNotInProgress() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        GatewayCheckout stale = h.checkouts.save(GatewayCheckout.create(s, pro.getId(), new BigDecimal("59900"),
+                "owner@test.com", null, NOW.plusHours(24), "owner", NOW.minusSeconds(31)));
+
+        start("PROFESIONAL");
+
+        assertThat(h.checkouts.findById(stale.getId()).orElseThrow().getStatus())
+                .isEqualTo(CheckoutStatus.SUPERSEDED);
+
+        GatewayHarness other = new GatewayHarness();
+        other.plans.put(pro);
+        other.plans.put(inicial);
+        Subscription t = other.store(subscription().planId(pro.getId()).build());
+        other.checkouts.save(GatewayCheckout.create(t, inicial.getId(), new BigDecimal("14900"), "owner@test.com",
+                null, NOW.plusHours(24), "owner", NOW.minusSeconds(5)));
+
+        assertThat(other.checkoutUseCase.start("tenant-1", new CheckoutRequest("PROFESIONAL", null), OWNER)
+                .reused()).isFalse();
+    }
+
+    @Test
+    void gatewayErrorsReachTheTenantWithAGenericMessage() {
+        h.store(subscription().planId(pro.getId()).build());
+        h.gateway.failure = new GatewayRejectedException("payer_email inválido: owner@test.com (status 400)");
+
+        assertThatThrownBy(() -> start("PROFESIONAL")).isInstanceOf(GatewayRejectedException.class)
+                .hasMessage("No se pudo iniciar el pago con Mercado Pago");
+    }
+
+    @Test
     void customPlanRequiresContact() {
         h.store(subscription().planId(pro.getId()).build());
 
-        assertThatThrownBy(() -> start("EMPRESA")).isInstanceOf(PlanRequiresContactException.class);
+        assertThatThrownBy(() -> start("EMPRESA")).isInstanceOf(CheckoutPlanRequiresContactException.class)
+                .isInstanceOf(PlanRequiresContactException.class).extracting("code").isEqualTo("PLAN_REQUIRES_CONTACT");
         assertThat(h.checkouts.all()).isEmpty();
         assertThat(h.gateway.created).isEmpty();
     }

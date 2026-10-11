@@ -1,5 +1,6 @@
 package com.centauro.billing.application.service;
 
+import com.centauro.billing.domain.enums.GatewaySubscriptionStatus;
 import com.centauro.billing.domain.exception.GatewayUnavailableException;
 import com.centauro.billing.domain.model.Subscription;
 import com.centauro.billing.domain.port.PaymentGateway;
@@ -13,6 +14,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.math.BigDecimal;
 import java.util.Optional;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -88,6 +90,47 @@ public class GatewayOperations {
             log.warn("Pasarela: no se pudo cancelar el preapproval {} ({}): {}; lo retoma la conciliación",
                     gatewaySubscriptionId, context, e.getMessage());
         }
+    }
+
+    /**
+     * Pausa el débito vigente después del commit (suspensión administrativa). Best effort y sin exigir pasarela:
+     * la suspensión no puede fallar por la pasarela; si la llamada falla, la conciliación vuelve a pausar.
+     */
+    public void pauseQuietlyAfterCommit(Subscription subscription) {
+        quietlyAfterCommit(subscription, "pause", PaymentGateway::pause);
+    }
+
+    /** Reanuda el débito vigente después del commit (reactivación administrativa). Mismo criterio que la pausa. */
+    public void resumeQuietlyAfterCommit(Subscription subscription) {
+        quietlyAfterCommit(subscription, "resume", PaymentGateway::resume);
+    }
+
+    private void quietlyAfterCommit(Subscription subscription, String operation,
+                                    BiConsumer<PaymentGateway, String> call) {
+        String preapprovalId = subscription.getGatewaySubscriptionId();
+        if (!subscription.hasGatewaySubscription() || gateway.isEmpty()
+                || GatewaySubscriptionStatus.CANCELLED.storedValue().equals(subscription.getGatewayStatus())) {
+            return;
+        }
+        PaymentGateway target = gateway.get();
+        Runnable run = () -> {
+            try {
+                call.accept(target, preapprovalId);
+            } catch (RuntimeException e) {
+                log.warn("Pasarela: falló {} del preapproval {} para la suscripción {}: {}; lo retoma la conciliación",
+                        operation, preapprovalId, subscription.getId(), e.getMessage());
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            run.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                run.run();
+            }
+        });
     }
 
     /** Falla antes de mutar nada si la suscripción depende de una pasarela que no está configurada. */
