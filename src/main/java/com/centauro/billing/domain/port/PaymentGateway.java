@@ -9,10 +9,16 @@ import com.centauro.billing.domain.vo.RecurringCheckoutResult;
 import java.math.BigDecimal;
 import java.util.List;
 
+/**
+ * Pasarela de cobro recurrente. Las implementaciones traducen sus errores a {@code GatewayRejectedException}
+ * (la pasarela rechazó el pedido), {@code GatewayUnavailableException} (error del servidor o de red) y
+ * {@code GatewayTimeoutException}.
+ */
 public interface PaymentGateway {
 
     GatewayName name();
 
+    /** Crea la adhesión pendiente y devuelve el link de pago. Idempotente por {@code checkoutId}. */
     RecurringCheckoutResult createRecurringCheckout(RecurringCheckoutRequest request);
 
     GatewaySubscriptionSnapshot getSubscription(String gatewaySubscriptionId);
@@ -23,5 +29,12 @@ public interface PaymentGateway {
 
     void updateAmount(String gatewaySubscriptionId, BigDecimal amount);
 
+    /** Sin idempotencia del lado de la pasarela: cancelar algo ya cancelado puede fallar. */
     void cancel(String gatewaySubscriptionId);
+
+    /** Suspende los cobros sin cancelar la adhesión (suspensión administrativa). */
+    void pause(String gatewaySubscriptionId);
+
+    /** Reanuda una adhesión pausada. */
+    void resume(String gatewaySubscriptionId);
 }

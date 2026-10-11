@@ -24,6 +24,15 @@ public final class NoticePolicy {
 
     /** Devuelve {@code null} cuando no hay nada que avisar (ACTIVE al día o tenant desconocido). */
     public Notice notice(Subscription subscription, AccessDecision decision, OffsetDateTime now) {
+        return notice(subscription, decision, false, now);
+    }
+
+    /**
+     * {@code lastPaymentRejected}: el último pago registrado es un cobro rechazado de la pasarela. Se avisa
+     * mientras haya acceso completo; READ_ONLY y BLOCKED tienen prioridad.
+     */
+    public Notice notice(Subscription subscription, AccessDecision decision, boolean lastPaymentRejected,
+                         OffsetDateTime now) {
         if (subscription == null || !decision.known()) {
             return null;
         }
@@ -34,6 +43,11 @@ public final class NoticePolicy {
             return new Notice(NoticeCode.READ_ONLY, NoticeSeverity.CRITICAL, null);
         }
         SubscriptionStatus effective = decision.effectiveStatus();
+        if (lastPaymentRejected) {
+            Integer days = effective == SubscriptionStatus.PAST_DUE
+                    ? daysUntil(decision.effectiveGraceEndsAt(), now) : null;
+            return new Notice(NoticeCode.PAYMENT_REJECTED, NoticeSeverity.WARNING, days);
+        }
         if (effective == SubscriptionStatus.PAST_DUE) {
             return new Notice(NoticeCode.PAYMENT_OVERDUE, NoticeSeverity.WARNING,
                     daysUntil(decision.effectiveGraceEndsAt(), now));

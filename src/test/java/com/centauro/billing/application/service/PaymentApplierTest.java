@@ -15,11 +15,9 @@ import com.centauro.billing.domain.exception.SubscriptionAdminSuspendedException
 import com.centauro.billing.domain.model.Payment;
 import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.Subscription;
-import com.centauro.billing.domain.policy.AccessPolicy;
-import com.centauro.billing.domain.policy.AllowedActionsPolicy;
-import com.centauro.billing.domain.policy.NoticePolicy;
 import com.centauro.billing.domain.policy.PeriodCalculator;
 import com.centauro.billing.domain.vo.Actor;
+import com.centauro.billing.support.TestFixtures;
 import com.centauro.billing.support.InMemoryEventRepository;
 import com.centauro.billing.support.InMemoryPaymentRepository;
 import com.centauro.billing.support.InMemoryPlanRepository;
@@ -34,7 +32,6 @@ import java.time.OffsetDateTime;
 
 import static com.centauro.billing.support.TestFixtures.AR;
 import static com.centauro.billing.support.TestFixtures.NOW;
-import static com.centauro.billing.support.TestFixtures.TERMS;
 import static com.centauro.billing.support.TestFixtures.clockAt;
 import static com.centauro.billing.support.TestFixtures.plan;
 import static com.centauro.billing.support.TestFixtures.subscription;
@@ -60,8 +57,7 @@ class PaymentApplierTest {
         InMemoryPlanRepository plans = new InMemoryPlanRepository();
         pro = plans.put(plan("PROFESIONAL", false, new BigDecimal("25000")));
         applier = new PaymentApplier(subscriptions, payments, events);
-        SubscriptionViewAssembler assembler = new SubscriptionViewAssembler(new AccessPolicy(TERMS),
-                new NoticePolicy(AR), new AllowedActionsPolicy(), TERMS);
+        SubscriptionViewAssembler assembler = TestFixtures.assembler();
         manualPayments = new ManualPaymentUseCase(subscriptions, payments, plans, applier,
                 new PeriodCalculator(AR), assembler, clockAt(NOW));
     }

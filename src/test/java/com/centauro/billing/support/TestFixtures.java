@@ -1,5 +1,7 @@
 package com.centauro.billing.support;
 
+import com.centauro.billing.application.service.GatewayOperations;
+import com.centauro.billing.application.service.SubscriptionViewAssembler;
 import com.centauro.billing.domain.enums.GatewayName;
 import com.centauro.billing.domain.enums.PastDueReason;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
@@ -7,7 +9,12 @@ import com.centauro.billing.domain.enums.SuspensionReason;
 import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.PlanPrice;
 import com.centauro.billing.domain.model.Subscription;
+import com.centauro.billing.domain.policy.AccessPolicy;
+import com.centauro.billing.domain.policy.AllowedActionsPolicy;
 import com.centauro.billing.domain.policy.BillingTerms;
+import com.centauro.billing.domain.policy.NoticePolicy;
+import com.centauro.billing.domain.port.CheckoutRepositoryPort;
+import com.centauro.billing.domain.port.PaymentRepositoryPort;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -16,6 +23,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -49,6 +57,18 @@ public final class TestFixtures {
                 Set.of("SALES_CASH", "METRICS_FINANCIAL"), Map.of(), List.of());
     }
 
+    /** Sin checkouts, sin pagos y sin pasarela. */
+    public static SubscriptionViewAssembler assembler() {
+        return assembler(new InMemoryCheckoutRepository(), new InMemoryPaymentRepository(),
+                new GatewayOperations(Optional.empty()));
+    }
+
+    public static SubscriptionViewAssembler assembler(CheckoutRepositoryPort checkouts, PaymentRepositoryPort payments,
+                                                      GatewayOperations gatewayOperations) {
+        return new SubscriptionViewAssembler(new AccessPolicy(TERMS), new NoticePolicy(AR), new AllowedActionsPolicy(),
+                checkouts, payments, gatewayOperations, TERMS);
+    }
+
     public static Builder subscription() {
         return new Builder();
     }
@@ -68,7 +88,11 @@ public final class TestFixtures {
         private BigDecimal priceAmount = new BigDecimal("25000.00");
         private String gatewaySubscriptionId;
         private GatewayName gateway;
+        private String gatewayStatus;
+        private OffsetDateTime gatewayLastModified;
 
+        public Builder gatewayStatus(String value) { gatewayStatus = value; return this; }
+        public Builder gatewayLastModified(OffsetDateTime value) { gatewayLastModified = value; return this; }
         public Builder tenantId(String value) { tenantId = value; return this; }
         public Builder planId(UUID value) { planId = value; return this; }
         public Builder status(SubscriptionStatus value) { status = value; return this; }
@@ -91,7 +115,8 @@ public final class TestFixtures {
             return new Subscription(UUID.randomUUID(), tenantId, planId, status, suspensionReason, pastDueReason,
                     trialEndsAt, currentPeriodStart, currentPeriodEnd, billingAnchorDay, graceEndsAt,
                     cancelAtPeriodEnd, null, null,
-                    priceAmount, "ARS", gateway, gatewaySubscriptionId, null, null, null, "owner@test.com",
+                    priceAmount, "ARS", gateway, gatewaySubscriptionId, gatewayStatus, gatewayLastModified, null,
+                    "owner@test.com",
                     "Empresa Test", 0L, NOW.minusDays(30));
         }
     }

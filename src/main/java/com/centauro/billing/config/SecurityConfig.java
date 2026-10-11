@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -22,7 +23,7 @@ import java.time.Clock;
 import java.time.ZoneId;
 
 /**
- * Cuatro cadenas: interna (API key), webhooks (cerrada hasta PR1b), API con JWT y el resto
+ * Cuatro cadenas: interna (API key), webhooks (público con firma), API con JWT y el resto
  * (health y, si está habilitado, springdoc; todo lo demás denegado).
  * Los filtros se instancian acá y no son {@code @Component}, para que Spring Boot no los registre también
  * como filtros globales del servlet.
@@ -57,11 +58,17 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /**
+     * Público solo {@code POST /webhooks/mercadopago}: la autenticación es la firma {@code x-signature}, que
+     * verifica el controller antes de guardar nada (401 si no es válida). El resto de {@code /webhooks/**}, denegado.
+     */
     @Bean
     @Order(2)
     public SecurityFilterChain webhookChain(HttpSecurity http) throws Exception {
         stateless(http.securityMatcher("/webhooks/**"))
-                .authorizeHttpRequests(auth -> auth.anyRequest().denyAll());
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.POST, "/webhooks/mercadopago").permitAll()
+                        .anyRequest().denyAll());
         return http.build();
     }
 

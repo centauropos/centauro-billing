@@ -1,5 +1,6 @@
 package com.centauro.billing.infrastructure.adapter;
 
+import com.centauro.billing.domain.enums.SubscriptionEventType;
 import com.centauro.billing.domain.model.SubscriptionEvent;
 import com.centauro.billing.domain.port.SubscriptionEventRepositoryPort;
 import com.centauro.billing.infrastructure.jpa.entity.SubscriptionEventEntity;
@@ -9,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Component
@@ -47,9 +49,25 @@ public class SubscriptionEventRepositoryAdapter implements SubscriptionEventRepo
     public List<SubscriptionEvent> findRecentBySubscriptionId(UUID subscriptionId, int limit) {
         return repository.findBySubscriptionIdOrderByOccurredAtDesc(subscriptionId, PageRequest.of(0, limit))
                 .stream()
-                .map(e -> new SubscriptionEvent(e.getId(), e.getSubscriptionId(), e.getTenantId(), e.getType(),
-                        e.getFromStatus(), e.getToStatus(), e.getActorType(), e.getActor(), e.getReason(),
-                        e.getData(), e.getDedupeKey(), e.getOccurredAt()))
+                .map(SubscriptionEventRepositoryAdapter::toDomain)
                 .toList();
+    }
+
+    @Override
+    public Optional<SubscriptionEvent> findByDedupeKey(UUID subscriptionId, String dedupeKey) {
+        return repository.findFirstBySubscriptionIdAndDedupeKey(subscriptionId, dedupeKey)
+                .map(SubscriptionEventRepositoryAdapter::toDomain);
+    }
+
+    @Override
+    public Optional<SubscriptionEvent> findLatestByType(UUID subscriptionId, SubscriptionEventType type) {
+        return repository.findFirstBySubscriptionIdAndTypeOrderByOccurredAtDesc(subscriptionId, type)
+                .map(SubscriptionEventRepositoryAdapter::toDomain);
+    }
+
+    private static SubscriptionEvent toDomain(SubscriptionEventEntity e) {
+        return new SubscriptionEvent(e.getId(), e.getSubscriptionId(), e.getTenantId(), e.getType(),
+                e.getFromStatus(), e.getToStatus(), e.getActorType(), e.getActor(), e.getReason(),
+                e.getData(), e.getDedupeKey(), e.getOccurredAt());
     }
 }

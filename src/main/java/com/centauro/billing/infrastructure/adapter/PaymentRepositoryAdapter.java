@@ -59,6 +59,12 @@ public class PaymentRepositoryAdapter implements PaymentRepositoryPort {
     }
 
     @Override
+    public Optional<Payment> findByGatewayPaymentId(PaymentSource source, String gatewayPaymentId) {
+        return repository.findBySourceAndGatewayPaymentId(source, gatewayPaymentId)
+                .map(PaymentRepositoryAdapter::toDomain);
+    }
+
+    @Override
     public List<Payment> findBySubscriptionId(UUID subscriptionId) {
         return repository.findBySubscriptionIdOrderByCreatedAtDesc(subscriptionId).stream()
                 .map(PaymentRepositoryAdapter::toDomain).toList();

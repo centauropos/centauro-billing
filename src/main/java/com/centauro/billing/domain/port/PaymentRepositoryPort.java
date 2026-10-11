@@ -1,5 +1,6 @@
 package com.centauro.billing.domain.port;
 
+import com.centauro.billing.domain.enums.PaymentSource;
 import com.centauro.billing.domain.model.Payment;
 
 import java.time.OffsetDateTime;
@@ -18,6 +19,9 @@ public interface PaymentRepositoryPort {
     boolean markApplied(UUID paymentId, OffsetDateTime now);
 
     Optional<Payment> findManualByReference(String tenantId, String reference);
+
+    /** Clave de idempotencia de los cobros de la pasarela: {@code uq_payments_gateway}. */
+    Optional<Payment> findByGatewayPaymentId(PaymentSource source, String gatewayPaymentId);
 
     List<Payment> findBySubscriptionId(UUID subscriptionId);
 }

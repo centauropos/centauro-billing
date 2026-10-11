@@ -8,11 +8,9 @@ import com.centauro.billing.domain.exception.PlanNotFoundException;
 import com.centauro.billing.domain.exception.PlanRequiresContactException;
 import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.Subscription;
-import com.centauro.billing.domain.policy.AccessPolicy;
-import com.centauro.billing.domain.policy.AllowedActionsPolicy;
-import com.centauro.billing.domain.policy.NoticePolicy;
 import com.centauro.billing.domain.policy.PeriodCalculator;
 import com.centauro.billing.domain.vo.Actor;
+import com.centauro.billing.support.TestFixtures;
 import com.centauro.billing.support.InMemoryEventRepository;
 import com.centauro.billing.support.InMemoryPlanRepository;
 import com.centauro.billing.support.InMemorySubscriptionRepository;
@@ -51,8 +49,7 @@ class TrialUseCaseTest {
         profesional = plans.put(plan("PROFESIONAL", true, new BigDecimal("59900")));
         plans.put(plan("INICIAL", true, new BigDecimal("14900")));
         plans.put(customPlan("EMPRESA", true));
-        SubscriptionViewAssembler assembler = new SubscriptionViewAssembler(new AccessPolicy(TERMS),
-                new NoticePolicy(AR), new AllowedActionsPolicy(), TERMS);
+        SubscriptionViewAssembler assembler = TestFixtures.assembler();
         useCase = new TrialUseCase(subscriptions, plans, events, new PeriodCalculator(AR), TERMS, assembler,
                 clockAt(LATE_NIGHT));
     }

@@ -38,6 +38,12 @@ public class InMemoryPaymentRepository implements PaymentRepositoryPort {
     }
 
     @Override
+    public Optional<Payment> findByGatewayPaymentId(PaymentSource source, String gatewayPaymentId) {
+        return payments.values().stream()
+                .filter(p -> p.source() == source && gatewayPaymentId.equals(p.gatewayPaymentId())).findFirst();
+    }
+
+    @Override
     public List<Payment> findBySubscriptionId(UUID subscriptionId) {
         return payments.values().stream().filter(p -> p.subscriptionId().equals(subscriptionId)).toList();
     }

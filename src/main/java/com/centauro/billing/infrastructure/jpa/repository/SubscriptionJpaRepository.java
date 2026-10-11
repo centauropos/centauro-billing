@@ -20,6 +20,16 @@ public interface SubscriptionJpaRepository extends JpaRepository<SubscriptionEnt
 
     Optional<SubscriptionEntity> findByTenantId(String tenantId);
 
+    Optional<SubscriptionEntity> findFirstByGatewaySubscriptionId(String gatewaySubscriptionId);
+
+    @Query(value = """
+            SELECT id FROM subscriptions
+            WHERE gateway_subscription_id IS NOT NULL AND id > :afterId
+            ORDER BY id
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<UUID> findWithGatewaySubscription(@Param("afterId") UUID afterId, @Param("limit") int limit);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select s from SubscriptionEntity s where s.tenantId = :tenantId")
     Optional<SubscriptionEntity> findByTenantIdForUpdate(@Param("tenantId") String tenantId);

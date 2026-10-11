@@ -3,8 +3,7 @@
 ## Propósito
 
 Suscripciones de los tenants de Centauro: planes, precios, trial, mora y nivel
-de acceso. El cobro recurrente con Mercado Pago llega en PR1b; hoy solo
-existe el port `PaymentGateway`.
+de acceso, y el cobro recurrente con Mercado Pago (preapproval sin plan).
 
 Responsabilidades:
 - planes y precios versionados (ARS, mensual)
@@ -13,7 +12,7 @@ Responsabilidades:
 - pagos manuales registrados desde el backoffice
 - nivel de acceso (FULL / READ_ONLY / BLOCKED) para los demás servicios
 - historial de eventos de la suscripción
-- (PR1b) checkout y cobro recurrente con Mercado Pago (preapproval)
+- checkout y cobro recurrente con Mercado Pago (preapproval), webhook y conciliación
 
 ## Stack
 
@@ -30,7 +29,7 @@ Responsabilidades:
 Artefacto: `com.centauro:billing`. Paquete base: `com.centauro.billing`.
 Puerto: 8087 (`PORT` en Heroku). Jar: `target/billing.jar` (`Procfile`).
 
-Sin SDK de Mercado Pago: el cliente de PR1b será `RestClient`. No agregar el SDK.
+Sin SDK de Mercado Pago: el cliente es `RestClient`. No agregar el SDK.
 Sin MapStruct: mapeo manual.
 
 ## Arquitectura
@@ -41,7 +40,7 @@ Hexagonal, igual que centauro-fiscal. Mantenerla.
 com.centauro.billing
 ├── domain/ model, enums, vo, policy, port, exception
 ├── application/ usecase, service, job, dto
-├── infrastructure/ jpa, adapter, lock (PR1b: mercadopago)
+├── infrastructure/ jpa, adapter, lock, mercadopago
 ├── web/ controller, security, filter, exception, openapi
 └── config/
 ```
@@ -77,7 +76,8 @@ en cada consumidor, no acá.
 | `/api/v1/billing/**` | JWT del usuario (HS256, `JWT_SECRET`) |
 | `/api/v1/platform/**` | JWT con `PLATFORM_ADMIN` en `permissions` (estricto) |
 | `/internal/v1/**` | header `X-Internal-Api-Key` |
-| `/webhooks/**` | `denyAll` hasta PR1b (ahí pasa a público con firma `x-signature`) |
+| `POST /webhooks/mercadopago` | público; lo autentica la firma `x-signature` (401 si no es válida) |
+| resto de `/webhooks/**` | `denyAll` |
 
 Cada superficie es un `SecurityFilterChain` propio en `config/SecurityConfig`.
 Los filtros se instancian ahí; no registrarlos como `@Component` (Spring Boot
@@ -121,28 +121,147 @@ Una suscripción por tenant (`uq_subscriptions_tenant`). El trial se crea con
 
 ## Pasarela de pago
 
-`domain/port/PaymentGateway` define la interfaz. En PR1a no hay
-implementación productiva: `GatewayOperations` resuelve el bean de forma
-opcional y la aplicación arranca sin variables de Mercado Pago.
+`domain/port/PaymentGateway` define la interfaz; `infrastructure/mercadopago`
+la implementa con `RestClient` (preapproval **sin plan**, ARS, mensual).
+El bean existe solo si `MP_ACCESS_TOKEN` tiene valor
+(`MercadoPagoConfiguredCondition`; `@ConditionalOnProperty` no sirve porque
+toma el string vacío como presente). Sin token la aplicación arranca igual:
+`GatewayOperations` resuelve el bean de forma opcional, el checkout da 502
+`GATEWAY_UNAVAILABLE` y los jobs de webhook y conciliación no corren.
 
 Cancelar o cambiar de plan llama a la pasarela solo si la suscripción tiene
 `gatewaySubscriptionId`. Si lo tiene y no hay pasarela configurada, falla con
-502 (`GATEWAY_UNAVAILABLE`) antes de modificar nada.
+502 antes de modificar nada.
 
 La llamada remota se registra con `TransactionSynchronization.afterCommit`
 (`GatewayOperations.*AfterCommit`): si la operación local falla o hace
 rollback, la pasarela no se entera. Un error remoto después del commit no
-deshace el cambio local; se loguea para conciliar (la conciliación llega con
-PR1b). Sin transacción activa la llamada es directa.
+deshace el cambio local; se loguea y lo corrige `GatewayReconciliationJob`.
+Sin transacción activa la llamada es directa.
 
-Los tests nunca llaman a MP: usar `FakePaymentGateway` (en `src/test`).
+Los tests nunca llaman a MP: usar `FakePaymentGateway` y `GatewayHarness`
+(en `src/test`); el adaptador se prueba con `MockRestServiceServer`.
 
-Reglas para PR1b, que no se negocian:
-- solo un pago aprobado, reconsultado en MP, activa o renueva
+Reglas que no se negocian:
+- solo un cobro aprobado, reconsultado en MP, activa o renueva
 - nunca activar por `back_url` ni por el payload del webhook
 - idempotencia por `webhook_events (provider, dedupe_key)` y por
   `payments (source, gateway_payment_id)`; `payments.applied` evita extender dos veces
 - webhook: guardar primero, procesar después; si falla, `FAILED`, 200 y reintento por job
+
+### Mercado Pago
+
+Checkout (`POST /api/v1/billing/checkout {planCode, payerEmail?}`, ADMIN o
+`BILLING_MANAGE`):
+
+1. Transacción corta (`CheckoutTransactions.prepare`): bloquea la suscripción,
+   valida plan (visible, con precio) y `canCheckout`, y guarda un
+   `gateway_checkouts` PENDING con el importe vigente. Un plan a medida da 409
+   `PLAN_REQUIRES_CONTACT`. Un PENDING del mismo plan sin `init_point` creado
+   hace menos de 30 s (doble click) da 409 `CHECKOUT_IN_PROGRESS` y no se
+   reemplaza. Un PENDING vigente del mismo plan, importe y email se reutiliza
+   (200); otro distinto se marca SUPERSEDED y su preapproval se cancela.
+2. Sin transacción: `POST /preapproval` con `external_reference` = id del
+   checkout y `X-Idempotency-Key` = id del checkout.
+3. Transacción corta: guarda `init_point` y el id del preapproval (201).
+   Si MP falla o da timeout, el checkout queda FAILED. Al tenant le llega
+   siempre "No se pudo iniciar el pago con Mercado Pago" (422/502/504 según
+   el caso); el detalle de MP va solo al log.
+
+`start_date` es el fin del trial vigente o del período pago en curso, así no se
+cobra dos veces el mismo tiempo. `back_url` sale de `BILLING_CHECKOUT_BACK_URL`
+con `?checkout=<id>`; sin esa variable el checkout da 502.
+
+Webhook (`POST /webhooks/mercadopago`), en este orden:
+
+1. `data.id` en la query es obligatorio: sin él, 400 y no se guarda nada. Es
+   el único recurso que se usa; un `data.id` distinto en el body solo se loguea.
+2. Firma HMAC-SHA256 en hex sobre `id:<data.id>;request-id:<x-request-id>;ts:<ts>;`
+   con `MP_WEBHOOK_SECRET`, comparada con `MessageDigest.isEqual`. Sin firma
+   válida: 401 y no se guarda nada. Con secreto configurado la firma es
+   siempre obligatoria y `MP_WEBHOOK_REQUIRE_SIGNATURE` se ignora. Sin secreto
+   y con el flag en `false` se acepta sin firma (solo pruebas); con el flag en
+   `false` y un token `APP_USR-` la aplicación no arranca.
+3. `ts` fuera de `MP_WEBHOOK_MAX_SKEW_SECONDS` (300 por defecto; 0 desactiva)
+   es 401. Un `ts` mayor que 10^12 se interpreta como milisegundos.
+4. Body acotado a `MP_WEBHOOK_MAX_BODY_BYTES` (64 KB): si lo supera, 413
+   `PAYLOAD_TOO_LARGE`. Body que no es JSON: 400.
+5. Se guarda en `webhook_events` con `dedupe_key = r:<x-request-id>:d:<data.id>`.
+   Sin `x-request-id`, o con ids más largos que las columnas, 400: nunca se
+   trunca. Mismo request id con otro `data.id` son dos eventos.
+6. Se reconsulta el recurso en MP fuera de transacción y se aplica con
+   `GatewaySyncService` (una transacción `REQUIRES_NEW` por recurso, con la
+   suscripción bloqueada). Siempre 200 una vez guardado.
+
+El resultado se escribe con un UPDATE condicional (`status` y `attempts`
+leídos): si el job de reintentos y el webhook procesan la misma fila, el que
+llega segundo no pisa al otro.
+
+| Recurso reconsultado | Efecto |
+|---|---|
+| preapproval `authorized` de un checkout PENDING | vincula el débito, fija plan y precio del checkout, limpia la baja agendada, checkout AUTHORIZED; cancela el débito anterior, otros PENDING y los preapprovals conocidos de checkouts EXPIRED/FAILED |
+| preapproval `authorized` de un checkout EXPIRED/FAILED (autorización tardía) | igual que el anterior, salvo que haya suspensión administrativa, un débito vigente de un checkout más nuevo o una baja posterior al checkout: entonces evento `LATE_AUTHORIZATION_DISCARDED` y se cancela ese preapproval después del commit |
+| preapproval `authorized` de un checkout SUPERSEDED/CANCELLED | cancela ese preapproval |
+| preapproval vigente `paused`/`cancelled` | evento `GATEWAY_PAUSED`/`GATEWAY_CANCELLED`; no cambia el estado (el período pago se respeta) |
+| preapproval `cancelled` de un checkout PENDING | checkout CANCELLED |
+| cobro aprobado por el importe del débito o por el precio vigente (±0,01) | `payments` + `PaymentApplier` (con suspensión administrativa queda registrado sin aplicar) |
+| cobro aprobado por más que ambos | se aplica y evento `PAYMENT_OVERPAID` |
+| cobro aprobado por menos que ambos | registrado sin aplicar, evento `PAYMENT_AMOUNT_MISMATCH` |
+| cobro aprobado en otra moneda | no se guarda en `payments`; evento `PAYMENT_CURRENCY_MISMATCH` con el importe real |
+| cobro aprobado de un preapproval reemplazado | registrado sin aplicar, evento `PAYMENT_FROM_SUPERSEDED_DEBIT`, se vuelve a pedir la cancelación; visible en la plataforma |
+| cobro rechazado | `payments` REJECTED, evento `PAYMENT_REJECTED` y aviso `PAYMENT_REJECTED` en la vista del tenant |
+
+El importe del débito es el del preapproval reconsultado o, si no está, el
+del checkout que lo creó: un cobro con el importe viejo tras un cambio de
+plan se aplica.
+
+Suspensión administrativa: suspender pausa el preapproval vigente después del
+commit (`status: paused`) y reactivar lo reanuda (`authorized`). Si la pasarela
+falla, la suspensión o reactivación local queda igual y lo corrige la
+conciliación. Reactivar aplica, en orden de fecha, los cobros APPROVED sin
+aplicar de la suscripción (excluye los de débitos reemplazados y los de
+importe insuficiente); `currentPeriodEnd` es opcional si hay cobros pendientes
+que cubran el período, y si se manda, los cobros extienden desde ese fin.
+
+Un preapproval con `last_modified` no posterior al guardado se ignora
+(notificación desactualizada). Un cobro APPROVED nunca vuelve atrás.
+`payments.gateway_payment_id` es el id del authorized_payment;
+`gateway_charge_id`, el id del pago de MP.
+
+Jobs de MP: `pg_try_advisory_lock` **de sesión** sobre una conexión dedicada
+en autocommit (`PostgresAdvisoryJobLock`), liberado con `pg_advisory_unlock`
+en `finally`; si la liberación falla, la conexión se aborta. No queda ninguna
+transacción abierta durante las llamadas HTTP. Cursor por id.
+
+| Job | Lock | Qué hace |
+|---|---|---|
+| `CheckoutExpirationJob` | 1002 | PENDING vencidos → EXPIRED; reconsulta el preapproval antes de cancelarlo: si está autorizado lo aplica con el flujo normal, y nunca cancela el débito vigente. Si MP no responde, no cancela |
+| `WebhookRetryJob` | 1003 | reprocesa RECEIVED/FAILED vencidos, backoff `2^intentos` min (tope 6 h), hasta `BILLING_WEBHOOK_MAX_ATTEMPTS` |
+| `GatewayReconciliationJob` | 1004 | reconsulta cada débito vinculado y sus cobros; cancela débitos vivos de bajas posteriores al vínculo; pausa/reanuda según la suspensión administrativa; corrige importes distintos del precio; aplica autorizaciones tardías de checkouts EXPIRED/FAILED o cancela preapprovals de checkouts reemplazados. Acotado por `BILLING_RECONCILIATION_MAX_ITEMS` (2000) y `BILLING_RECONCILIATION_MAX_MINUTES` (20) |
+
+La conciliación cancela un débito por baja solo si la baja es posterior al
+vínculo, que se toma del evento `PAYMENT_METHOD_AUTHORIZED` del preapproval.
+Sin ese evento, cancela (criterio conservador).
+
+Riesgos conocidos:
+- La cancelación y el cambio de importe no tienen idempotencia en MP y se
+  hacen después del commit, best effort. Si fallan, queda logueado y lo
+  corrige la conciliación diaria; entre tanto MP puede cobrar de más.
+- Un checkout FAILED por timeout pudo haber creado el preapproval en MP. Si el
+  tenant lo autoriza, el webhook lo encuentra por `external_reference`; la
+  conciliación no busca en MP preapprovals de checkouts sin id.
+- Los nombres de estados de MP, el formato de la firma y el endpoint de
+  búsqueda de cobros son supuestos aislados en `MercadoPagoStatusMapper`,
+  `MercadoPagoSignatureVerifier` y `MercadoPagoGateway` (comentarios
+  "verificar"). Confirmarlos contra la documentación vigente antes de
+  producción.
+- Nunca loguear el access token ni el payload del webhook (puede traer datos
+  del pagador). Los ids de MP sí se pueden loguear.
+
+Pendiente:
+- retención de `webhook_events` (hoy crece sin límite);
+- búsqueda en MP de preapprovals huérfanos por `external_reference`;
+- procesamiento asíncrono del webhook (hoy se reconsulta MP dentro del request).
 
 ## Estados
 
@@ -158,7 +277,7 @@ Reglas para PR1b, que no se negocian:
 El acceso se evalúa con reloj (`AccessPolicy`): si un job viene atrasado, el
 acceso igual refleja el vencimiento.
 
-`SubscriptionLifecycleJob` (cron `billing.jobs.lifecycle-cron`, zona
+`SubscriptionLifecycleJob` (lock 1001, cron `billing.jobs.lifecycle-cron`, zona
 `billing.zone`) vence trials, cierra períodos y suspende por mora. Usa
 `pg_try_advisory_xact_lock(1001)`, `FOR UPDATE SKIP LOCKED`, una transacción
 por fila y eventos con `dedupe_key`. Tiene que ser idempotente.
@@ -201,9 +320,11 @@ fin.
 | Excepción | HTTP |
 |---|---|
 | `SubscriptionNotFoundException`, `PlanNotFoundException`, `PlanPriceNotFoundException` | 404 |
-| `InvalidSubscriptionTransitionException`, `SamePlanException`, `CheckoutNotAllowedException`, `Duplicate*Exception`, `PriceAlreadyEffectiveException`, `SubscriptionAdminSuspendedException` | 409 |
+| `InvalidSubscriptionTransitionException`, `SamePlanException`, `CheckoutNotAllowedException`, `Duplicate*Exception`, `PriceAlreadyEffectiveException`, `SubscriptionAdminSuspendedException`, `CheckoutInProgressException` (`CHECKOUT_IN_PROGRESS`), `CheckoutPlanRequiresContactException` (`PLAN_REQUIRES_CONTACT`) | 409 |
+| `WebhookPayloadTooLargeException` (`PAYLOAD_TOO_LARGE`) | 413 |
 | `PlanWithoutPriceException`, `PlanCustomPricingException` (`PLAN_CUSTOM_PRICING`), `PlanRequiresContactException` (`PLAN_REQUIRES_CONTACT`), `GatewayRejectedException` | 422 |
 | validación, `InvalidBillingRequestException` | 400 |
+| `InvalidWebhookSignatureException` (`INVALID_SIGNATURE`) | 401 |
 | `GatewayUnavailableException` | 502 |
 | `GatewayTimeoutException` | 504 |
 | resto | 500 genérico |
@@ -219,8 +340,9 @@ Base propia. `spring.jpa.hibernate.ddl-auto=validate` y
 Migraciones en `src/main/resources/db/migration`, de V1 a V7. La próxima es
 `V8__descripcion.sql`. Nunca editar una migración commiteada.
 
-`gateway_checkouts` (V5) y `webhook_events` (V6) existen en el esquema pero
-todavía no tienen entidad JPA: llegan en PR1b.
+`gateway_checkouts` (V5) y `webhook_events` (V6) se mapean con
+`GatewayCheckoutEntity` y `WebhookEventEntity`. `uq_checkouts_one_pending`
+garantiza un solo checkout PENDING por suscripción.
 
 Importes `NUMERIC(12,2)` y `BigDecimal` con escala 2 y `HALF_UP`. Nunca
 `double`. Fechas `TIMESTAMPTZ` y `OffsetDateTime`. Zona de negocio:
@@ -311,8 +433,21 @@ Opcionales: `URL_FRONT`, `BILLING_PUBLIC_BASE_URL`, `BILLING_CHECKOUT_BACK_URL`,
 producción configurarlo en `false`: apaga `/api-docs` y Swagger UI y la
 cadena de seguridad deja de permitir esas rutas.
 
-PR1b agrega `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET` y
-`MP_WEBHOOK_REQUIRE_SIGNATURE`.
+Mercado Pago (todas opcionales para arrancar):
+
+| Variable | Uso |
+|---|---|
+| `MP_ACCESS_TOKEN` | sin ella no hay pasarela: checkout 502, jobs de MP apagados |
+| `MP_WEBHOOK_SECRET` | sin ella el webhook responde 401 a todo (se avisa una vez al arrancar si hay token); con ella la firma es siempre obligatoria |
+| `MP_WEBHOOK_REQUIRE_SIGNATURE` (true) | `false` acepta notificaciones sin firma solo si no hay secreto; con token `APP_USR-` la app no arranca |
+| `MP_WEBHOOK_MAX_SKEW_SECONDS` (300) | tolerancia del `ts` de la firma (segundos; un `ts` > 10^12 se toma como ms); 0 la desactiva |
+| `MP_WEBHOOK_MAX_BODY_BYTES` (65536) | tamaño máximo del body; más es 413 |
+| `BILLING_RECONCILIATION_MAX_ITEMS` (2000), `BILLING_RECONCILIATION_MAX_MINUTES` (20) | tope por corrida de la conciliación |
+| `MP_CONNECT_TIMEOUT_MS` (5000), `MP_READ_TIMEOUT_MS` (15000) | timeouts del `RestClient` |
+| `BILLING_CHECKOUT_BACK_URL` | a dónde vuelve el tenant desde MP; sin ella el checkout da 502 |
+| `BILLING_PUBLIC_BASE_URL` | si está, se manda `notification_url = <base>/webhooks/mercadopago` |
+| `BILLING_JOBS_CHECKOUT_EXPIRATION_CRON`, `BILLING_JOBS_WEBHOOK_RETRY_CRON`, `BILLING_JOBS_RECONCILIATION_CRON` | crons de los jobs |
+| `BILLING_WEBHOOK_MAX_ATTEMPTS` (10) | reintentos de un webhook FAILED |
 
 `JWT_SECRET` tiene que ser idéntico al de auth-service.
 

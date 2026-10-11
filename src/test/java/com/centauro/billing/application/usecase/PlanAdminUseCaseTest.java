@@ -8,10 +8,8 @@ import com.centauro.billing.application.dto.PlanUpdateRequest;
 import com.centauro.billing.application.service.SubscriptionViewAssembler;
 import com.centauro.billing.domain.exception.InvalidBillingRequestException;
 import com.centauro.billing.domain.exception.PlanCustomPricingException;
-import com.centauro.billing.domain.policy.AccessPolicy;
-import com.centauro.billing.domain.policy.AllowedActionsPolicy;
-import com.centauro.billing.domain.policy.NoticePolicy;
 import com.centauro.billing.domain.vo.Actor;
+import com.centauro.billing.support.TestFixtures;
 import com.centauro.billing.support.InMemoryPlanRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,9 +18,7 @@ import java.math.BigDecimal;
 import java.util.Map;
 import java.util.Set;
 
-import static com.centauro.billing.support.TestFixtures.AR;
 import static com.centauro.billing.support.TestFixtures.NOW;
-import static com.centauro.billing.support.TestFixtures.TERMS;
 import static com.centauro.billing.support.TestFixtures.clockAt;
 import static com.centauro.billing.support.TestFixtures.customPlan;
 import static com.centauro.billing.support.TestFixtures.plan;
@@ -40,8 +36,7 @@ class PlanAdminUseCaseTest {
     void setUp() {
         plans = new InMemoryPlanRepository();
         plans.put(plan("PROFESIONAL", true, new BigDecimal("59900")));
-        useCase = new PlanAdminUseCase(plans, new SubscriptionViewAssembler(new AccessPolicy(TERMS),
-                new NoticePolicy(AR), new AllowedActionsPolicy(), TERMS), clockAt(NOW));
+        useCase = new PlanAdminUseCase(plans, TestFixtures.assembler(), clockAt(NOW));
     }
 
     @Test
