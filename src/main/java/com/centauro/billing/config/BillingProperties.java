@@ -1,0 +1,34 @@
+package com.centauro.billing.config;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.DefaultValue;
+
+@ConfigurationProperties(prefix = "billing")
+public record BillingProperties(
+        @DefaultValue("America/Argentina/Buenos_Aires") String zone,
+        @DefaultValue Internal internal,
+        String publicBaseUrl,
+        @DefaultValue Trial trial,
+        @DefaultValue Grace grace,
+        @DefaultValue Checkout checkout,
+        @DefaultValue Jobs jobs
+) {
+
+    public record Internal(String apiKey) {
+    }
+
+    public record Trial(@DefaultValue("14") int days,
+                        @DefaultValue("PRO") String planCode,
+                        @DefaultValue("3") int graceDays) {
+    }
+
+    public record Grace(@DefaultValue("7") int days) {
+    }
+
+    public record Checkout(@DefaultValue("48") int expirationHours, String backUrl) {
+    }
+
+    public record Jobs(@DefaultValue("true") boolean enabled,
+                       @DefaultValue("0 */15 * * * *") String lifecycleCron) {
+    }
+}
