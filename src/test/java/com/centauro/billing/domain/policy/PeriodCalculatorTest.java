@@ -134,6 +134,17 @@ class PeriodCalculatorTest {
     }
 
     @Test
+    void extendExclusiveEndAddsExactlyTheRequestedDays() {
+        OffsetDateTime midnightEnd = OffsetDateTime.of(2026, 10, 25, 0, 0, 0, 0, AR_OFFSET);
+        assertThat(calculator.extendExclusiveEnd(midnightEnd, 7))
+                .isEqualTo(OffsetDateTime.of(2026, 11, 1, 0, 0, 0, 0, AR_OFFSET));
+
+        OffsetDateTime midDayEnd = OffsetDateTime.of(2026, 10, 25, 15, 0, 0, 0, AR_OFFSET);
+        assertThat(calculator.extendExclusiveEnd(midDayEnd, 7))
+                .isEqualTo(OffsetDateTime.of(2026, 11, 2, 0, 0, 0, 0, AR_OFFSET));
+    }
+
+    @Test
     void startOfDayAfterUsesArgentineCalendarDayAndIsExclusive() {
         OffsetDateTime lateUtc = OffsetDateTime.parse("2026-10-12T02:30:00Z");
 
