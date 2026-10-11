@@ -39,6 +39,7 @@ public class Subscription {
     private OffsetDateTime trialEndsAt;
     private OffsetDateTime currentPeriodStart;
     private OffsetDateTime currentPeriodEnd;
+    private Integer billingAnchorDay;
     private OffsetDateTime graceEndsAt;
     private boolean cancelAtPeriodEnd;
     private OffsetDateTime canceledAt;
@@ -58,11 +59,11 @@ public class Subscription {
     public Subscription(UUID id, String tenantId, UUID planId, SubscriptionStatus status,
                         SuspensionReason suspensionReason, PastDueReason pastDueReason,
                         OffsetDateTime trialEndsAt, OffsetDateTime currentPeriodStart,
-                        OffsetDateTime currentPeriodEnd, OffsetDateTime graceEndsAt, boolean cancelAtPeriodEnd,
-                        OffsetDateTime canceledAt, OffsetDateTime suspendedAt, BigDecimal priceAmount,
-                        String currency, GatewayName gateway, String gatewaySubscriptionId, String gatewayStatus,
-                        OffsetDateTime gatewayLastModified, OffsetDateTime nextChargeAt, String billingEmail,
-                        String companyName, Long version, OffsetDateTime createdAt) {
+                        OffsetDateTime currentPeriodEnd, Integer billingAnchorDay, OffsetDateTime graceEndsAt,
+                        boolean cancelAtPeriodEnd, OffsetDateTime canceledAt, OffsetDateTime suspendedAt,
+                        BigDecimal priceAmount, String currency, GatewayName gateway, String gatewaySubscriptionId,
+                        String gatewayStatus, OffsetDateTime gatewayLastModified, OffsetDateTime nextChargeAt,
+                        String billingEmail, String companyName, Long version, OffsetDateTime createdAt) {
         this.id = Objects.requireNonNull(id, "id");
         this.tenantId = Objects.requireNonNull(tenantId, "tenantId");
         this.planId = Objects.requireNonNull(planId, "planId");
@@ -72,6 +73,7 @@ public class Subscription {
         this.trialEndsAt = trialEndsAt;
         this.currentPeriodStart = currentPeriodStart;
         this.currentPeriodEnd = currentPeriodEnd;
+        this.billingAnchorDay = billingAnchorDay == null ? null : requireAnchorDay(billingAnchorDay);
         this.graceEndsAt = graceEndsAt;
         this.cancelAtPeriodEnd = cancelAtPeriodEnd;
         this.canceledAt = canceledAt;
@@ -95,7 +97,7 @@ public class Subscription {
                                           OffsetDateTime trialEndsAt, String companyName, String billingEmail,
                                           OffsetDateTime now) {
         return new Subscription(UUID.randomUUID(), tenantId, planId, TRIALING, null, null, trialEndsAt,
-                null, null, null, false, null, null, priceAmount, Amounts.CURRENCY_ARS, null, null, null,
+                null, null, null, null, false, null, null, priceAmount, Amounts.CURRENCY_ARS, null, null, null,
                 null, null, billingEmail, companyName, null, now);
     }
 
@@ -215,8 +217,9 @@ public class Subscription {
         return status == SUSPENDED && suspensionReason != SuspensionReason.NON_PAYMENT;
     }
 
+    /** {@code anchorDay} es el día del mes en que vencen los períodos siguientes (ver {@code PeriodCalculator}). */
     public SubscriptionEvent applyPayment(UUID paymentId, OffsetDateTime periodStart, OffsetDateTime periodEnd,
-                                          GatewayName paymentGateway, Actor actor, String reason,
+                                          int anchorDay, GatewayName paymentGateway, Actor actor, String reason,
                                           OffsetDateTime now) {
         if (isAdminSuspended()) {
             throw invalid("aplicar un pago con suspensión administrativa a");
@@ -224,10 +227,12 @@ public class Subscription {
         if (periodEnd == null || periodStart == null || !periodEnd.isAfter(periodStart)) {
             throw new InvalidBillingRequestException("El fin del período debe ser posterior al inicio");
         }
+        requireAnchorDay(anchorDay);
         SubscriptionStatus from = status;
         status = ACTIVE;
         currentPeriodStart = periodStart;
         currentPeriodEnd = periodEnd;
+        billingAnchorDay = anchorDay;
         graceEndsAt = null;
         pastDueReason = null;
         suspensionReason = null;
@@ -320,7 +325,8 @@ public class Subscription {
 
     // ---------------------------------------------------------------- T12
 
-    public SubscriptionEvent reactivate(OffsetDateTime newPeriodEnd, Actor actor, String reason,
+    /** {@code anchorDay} es el día del mes de {@code newPeriodEnd} en la zona de negocio. */
+    public SubscriptionEvent reactivate(OffsetDateTime newPeriodEnd, int anchorDay, Actor actor, String reason,
                                         OffsetDateTime now) {
         if (status != SUSPENDED && status != CANCELED) {
             throw invalid("reactivar");
@@ -328,12 +334,14 @@ public class Subscription {
         if (newPeriodEnd == null || !newPeriodEnd.isAfter(now)) {
             throw new InvalidBillingRequestException("El fin del período debe ser posterior a hoy");
         }
+        requireAnchorDay(anchorDay);
         SubscriptionStatus from = status;
         status = ACTIVE;
         if (currentPeriodStart == null || !currentPeriodStart.isBefore(newPeriodEnd)) {
             currentPeriodStart = now;
         }
         currentPeriodEnd = newPeriodEnd;
+        billingAnchorDay = anchorDay;
         suspensionReason = null;
         suspendedAt = null;
         pastDueReason = null;
@@ -370,6 +378,13 @@ public class Subscription {
 
     public boolean hasGatewaySubscription() {
         return gatewaySubscriptionId != null && !gatewaySubscriptionId.isBlank();
+    }
+
+    private static int requireAnchorDay(int anchorDay) {
+        if (anchorDay < 1 || anchorDay > 31) {
+            throw new InvalidBillingRequestException("El día ancla debe estar entre 1 y 31");
+        }
+        return anchorDay;
     }
 
     private InvalidSubscriptionTransitionException invalid(String action) {
@@ -412,6 +427,10 @@ public class Subscription {
 
     public OffsetDateTime getCurrentPeriodEnd() {
         return currentPeriodEnd;
+    }
+
+    public Integer getBillingAnchorDay() {
+        return billingAnchorDay;
     }
 
     public OffsetDateTime getGraceEndsAt() {

@@ -60,7 +60,7 @@ class TrialUseCaseTest {
         assertThat(result.created()).isTrue();
         assertThat(result.status()).isEqualTo("TRIALING");
         assertThat(result.planCode()).isEqualTo("PRO");
-        assertThat(result.trialEndsAt()).isEqualTo(OffsetDateTime.of(2026, 10, 25, 23, 59, 59, 0, AR_OFFSET));
+        assertThat(result.trialEndsAt()).isEqualTo(OffsetDateTime.of(2026, 10, 26, 0, 0, 0, 0, AR_OFFSET));
         Subscription saved = subscriptions.findByTenantId("tenant-1").orElseThrow();
         assertThat(saved.getPlanId()).isEqualTo(pro.getId());
         assertThat(saved.getPriceAmount()).isEqualByComparingTo("25000.00");

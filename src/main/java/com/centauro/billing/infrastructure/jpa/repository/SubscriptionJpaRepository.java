@@ -47,25 +47,28 @@ public interface SubscriptionJpaRepository extends JpaRepository<SubscriptionEnt
 
     @Query(value = """
             SELECT id FROM subscriptions
-            WHERE status = 'TRIALING' AND trial_ends_at <= :now
-            ORDER BY trial_ends_at
+            WHERE status = 'TRIALING' AND trial_ends_at <= :now AND id > :afterId
+            ORDER BY id
             LIMIT :limit
             """, nativeQuery = true)
-    List<UUID> findTrialsDue(@Param("now") OffsetDateTime now, @Param("limit") int limit);
+    List<UUID> findTrialsDue(@Param("now") OffsetDateTime now, @Param("afterId") UUID afterId,
+                             @Param("limit") int limit);
 
     @Query(value = """
             SELECT id FROM subscriptions
-            WHERE status = 'ACTIVE' AND current_period_end <= :now
-            ORDER BY current_period_end
+            WHERE status = 'ACTIVE' AND current_period_end <= :now AND id > :afterId
+            ORDER BY id
             LIMIT :limit
             """, nativeQuery = true)
-    List<UUID> findPeriodsDue(@Param("now") OffsetDateTime now, @Param("limit") int limit);
+    List<UUID> findPeriodsDue(@Param("now") OffsetDateTime now, @Param("afterId") UUID afterId,
+                              @Param("limit") int limit);
 
     @Query(value = """
             SELECT id FROM subscriptions
-            WHERE status = 'PAST_DUE' AND grace_ends_at <= :now
-            ORDER BY grace_ends_at
+            WHERE status = 'PAST_DUE' AND grace_ends_at <= :now AND id > :afterId
+            ORDER BY id
             LIMIT :limit
             """, nativeQuery = true)
-    List<UUID> findGraceDue(@Param("now") OffsetDateTime now, @Param("limit") int limit);
+    List<UUID> findGraceDue(@Param("now") OffsetDateTime now, @Param("afterId") UUID afterId,
+                            @Param("limit") int limit);
 }

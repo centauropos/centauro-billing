@@ -25,11 +25,15 @@ public interface SubscriptionRepositoryPort {
 
     Subscription save(Subscription subscription);
 
-    List<UUID> findTrialsDue(OffsetDateTime now, int limit);
+    /**
+     * Candidatos vencidos con paginación por cursor: ids mayores a {@code afterId}, ordenados por id
+     * (orden de uuid de PostgreSQL, equivalente al orden lexicográfico del texto).
+     */
+    List<UUID> findTrialsDue(OffsetDateTime now, UUID afterId, int limit);
 
-    List<UUID> findPeriodsDue(OffsetDateTime now, int limit);
+    List<UUID> findPeriodsDue(OffsetDateTime now, UUID afterId, int limit);
 
-    List<UUID> findGraceDue(OffsetDateTime now, int limit);
+    List<UUID> findGraceDue(OffsetDateTime now, UUID afterId, int limit);
 
     PageResult<Subscription> search(SubscriptionSearchCriteria criteria, PageQuery pageQuery);
 }

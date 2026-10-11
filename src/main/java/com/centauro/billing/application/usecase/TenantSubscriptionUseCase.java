@@ -72,10 +72,11 @@ public class TenantSubscriptionUseCase {
     public TenantSubscriptionView cancel(String tenantId, String reason, Actor actor) {
         OffsetDateTime now = OffsetDateTime.now(clock);
         Subscription subscription = lock(tenantId);
+        gatewayOperations.requireAvailable(subscription);
         SubscriptionEvent event = subscription.cancel(actor, reason, now);
-        gatewayOperations.cancel(subscription);
         Subscription saved = subscriptions.save(subscription);
         events.append(event);
+        gatewayOperations.cancelAfterCommit(saved);
         return view(saved, now);
     }
 
@@ -91,11 +92,12 @@ public class TenantSubscriptionUseCase {
                 .filter(Plan::isOfferable)
                 .orElseThrow(() -> new PlanNotFoundException(planCode));
         PlanPrice price = plan.currentPrice(now).orElseThrow(() -> new PlanWithoutPriceException(planCode));
+        gatewayOperations.requireAvailable(subscription);
         SubscriptionEvent event = subscription.changePlan(plan.getId(), plan.getCode(), price.amount(), actor,
                 null, now);
-        gatewayOperations.updateAmount(subscription, price.amount());
         Subscription saved = subscriptions.save(subscription);
         events.append(event);
+        gatewayOperations.updateAmountAfterCommit(saved, price.amount());
         return view(saved, now);
     }
 

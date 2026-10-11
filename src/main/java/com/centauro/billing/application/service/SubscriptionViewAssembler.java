@@ -73,7 +73,7 @@ public class SubscriptionViewAssembler {
                 local(subscription.getNextChargeAt()),
                 null,
                 NoticeView.from(noticePolicy.notice(subscription, decision, now)),
-                allowedActionsPolicy.allowedActions(subscription).stream().map(AllowedAction::name).toList());
+                allowedActionsPolicy.allowedActions(subscription, decision).stream().map(AllowedAction::name).toList());
     }
 
     public AccessView accessView(String tenantId, Subscription subscription, Plan plan, OffsetDateTime now) {

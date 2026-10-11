@@ -11,6 +11,7 @@ CREATE TABLE subscriptions (
     trial_ends_at            TIMESTAMPTZ,
     current_period_start     TIMESTAMPTZ,
     current_period_end       TIMESTAMPTZ,
+    billing_anchor_day       SMALLINT,
     grace_ends_at            TIMESTAMPTZ,
     cancel_at_period_end     BOOLEAN       NOT NULL DEFAULT FALSE,
     canceled_at              TIMESTAMPTZ,
@@ -39,6 +40,7 @@ CREATE TABLE subscriptions (
     CONSTRAINT ck_subscriptions_trial CHECK (status <> 'TRIALING' OR trial_ends_at IS NOT NULL),
     CONSTRAINT ck_subscriptions_past_due CHECK (status <> 'PAST_DUE' OR (grace_ends_at IS NOT NULL AND past_due_reason IS NOT NULL)),
     CONSTRAINT ck_subscriptions_active CHECK (status <> 'ACTIVE' OR current_period_end IS NOT NULL),
+    CONSTRAINT ck_subscriptions_anchor_day CHECK (billing_anchor_day IS NULL OR billing_anchor_day BETWEEN 1 AND 31),
     CONSTRAINT ck_subscriptions_currency CHECK (currency = 'ARS'),
     CONSTRAINT ck_subscriptions_price CHECK (price_amount IS NULL OR price_amount >= 0),
     CONSTRAINT ck_subscriptions_gateway CHECK (gateway IS NULL OR gateway IN ('MERCADOPAGO','MANUAL'))

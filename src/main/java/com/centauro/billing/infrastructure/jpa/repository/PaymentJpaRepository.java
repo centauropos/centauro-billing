@@ -7,16 +7,19 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface PaymentJpaRepository extends JpaRepository<PaymentEntity, UUID> {
 
     @Modifying(flushAutomatically = true)
-    @Query("update PaymentEntity p set p.applied = true where p.id = :id and p.applied = false")
-    int markApplied(@Param("id") UUID id);
+    @Query("update PaymentEntity p set p.applied = true, p.updatedAt = :now where p.id = :id and p.applied = false")
+    int markApplied(@Param("id") UUID id, @Param("now") OffsetDateTime now);
 
-    boolean existsByTenantIdAndSourceAndReference(String tenantId, PaymentSource source, String reference);
+    Optional<PaymentEntity> findByTenantIdAndSourceAndReference(String tenantId, PaymentSource source,
+                                                                String reference);
 
     List<PaymentEntity> findBySubscriptionIdOrderByCreatedAtDesc(UUID subscriptionId);
 }

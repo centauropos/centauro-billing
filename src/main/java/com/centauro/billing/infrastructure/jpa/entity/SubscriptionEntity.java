@@ -59,6 +59,9 @@ public class SubscriptionEntity {
     @Column(name = "current_period_end")
     private OffsetDateTime currentPeriodEnd;
 
+    @Column(name = "billing_anchor_day")
+    private Short billingAnchorDay;
+
     @Column(name = "grace_ends_at")
     private OffsetDateTime graceEndsAt;
 

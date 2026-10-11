@@ -77,11 +77,24 @@ en cada consumidor, no acá.
 | `/api/v1/billing/**` | JWT del usuario (HS256, `JWT_SECRET`) |
 | `/api/v1/platform/**` | JWT con `PLATFORM_ADMIN` en `permissions` (estricto) |
 | `/internal/v1/**` | header `X-Internal-Api-Key` |
-| `/webhooks/mercadopago` | (PR1b) público, firma `x-signature` |
+| `/webhooks/**` | `denyAll` hasta PR1b (ahí pasa a público con firma `x-signature`) |
 
 Cada superficie es un `SecurityFilterChain` propio en `config/SecurityConfig`.
 Los filtros se instancian ahí; no registrarlos como `@Component` (Spring Boot
-los agregaría a todas las rutas).
+los agregaría a todas las rutas). Dentro de `/api/**`, cualquier ruta que no
+sea `/api/v1/billing/**` ni `/api/v1/platform/**` se deniega; fuera de esas
+cadenas solo son públicos `/actuator/health` y, si `SPRINGDOC_ENABLED`, la
+documentación.
+
+`/api/v1/platform/**` exige `hasAuthority("PLATFORM_ADMIN")` en la URL y
+además `@PreAuthorize("@billingAuth.isPlatformAdmin()")` en los controllers.
+`JwtTokenFilter` mapea el rol como `ROLE_<rol>` y los permisos tal cual, así
+que un rol llamado `PLATFORM_ADMIN` no concede nada: solo el permiso.
+
+`UserDetailsServiceAutoConfiguration` está excluida: no hay usuarios locales.
+
+`SecurityWiringTest` (`@WebMvcTest`, sin base) cubre el cableado de las
+cadenas. Si tocás `SecurityConfig`, ampliarlo.
 
 Gestión del tenant: rol `ADMIN` o permiso `BILLING_MANAGE`, chequeo estricto
 (`@billingAuth.canManage()`), sin modo sombra ni pase para tokens legacy.
@@ -92,7 +105,8 @@ El rol se lee de `role` y, si falta, de `roleId.authority`.
 Comparar API keys y firmas con `MessageDigest.isEqual`.
 
 Nunca loguear la API key interna, el secreto JWT, tokens de Mercado Pago ni
-emails completos.
+emails completos. Para identificar a quien opera, loguear `Actor.logId()` (el
+claim `id`), nunca el `sub` (username).
 
 ## Multitenancy
 
@@ -113,7 +127,13 @@ opcional y la aplicación arranca sin variables de Mercado Pago.
 
 Cancelar o cambiar de plan llama a la pasarela solo si la suscripción tiene
 `gatewaySubscriptionId`. Si lo tiene y no hay pasarela configurada, falla con
-502 (`GATEWAY_UNAVAILABLE`).
+502 (`GATEWAY_UNAVAILABLE`) antes de modificar nada.
+
+La llamada remota se registra con `TransactionSynchronization.afterCommit`
+(`GatewayOperations.*AfterCommit`): si la operación local falla o hace
+rollback, la pasarela no se entera. Un error remoto después del commit no
+deshace el cambio local; se loguea para conciliar (la conciliación llega con
+PR1b). Sin transacción activa la llamada es directa.
 
 Los tests nunca llaman a MP: usar `FakePaymentGateway` (en `src/test`).
 
@@ -142,9 +162,36 @@ acceso igual refleja el vencimiento.
 `billing.zone`) vence trials, cierra períodos y suspende por mora. Usa
 `pg_try_advisory_xact_lock(1001)`, `FOR UPDATE SKIP LOCKED`, una transacción
 por fila y eventos con `dedupe_key`. Tiene que ser idempotente.
+Recorre los candidatos con cursor por id (`id > :afterId ORDER BY id`): una
+fila que falla siempre o está bloqueada no se relee en la corrida ni frena el
+lote; se reintenta en la corrida siguiente.
 
-Las mutaciones por API toman la fila con `PESSIMISTIC_WRITE` y además hay
-`@Version` (conflicto → 409 `CONCURRENT_MODIFICATION`).
+Las mutaciones por API toman la fila con `PESSIMISTIC_WRITE`. Hoy
+`CONCURRENT_MODIFICATION` (409) solo lo dispara el `@Version` de Hibernate
+(`ObjectOptimisticLockingFailureException`), en la práctica una carrera con el
+job o entre réplicas que el bloqueo pesimista no cubrió. No hay
+`expectedVersion` en la API: el cliente no puede pedir "aplicar solo si no
+cambió".
+
+Las acciones permitidas (`allowedActions`) y el acceso se calculan sobre el
+estado efectivo de `AccessPolicy`, no sobre el estado guardado.
+
+Pagar no anula una baja agendada: si `cancelAtPeriodEnd = true` y entra un
+pago, el período se extiende pero la baja sigue agendada para el nuevo fin.
+Es una decisión de negocio pendiente; no cambiarla sin definición explícita.
+
+Vencimientos exclusivos: `trial_ends_at`, `current_period_end` y
+`grace_ends_at` son el primer instante sin acceso (`now >= vencimiento`
+vence). Los finales "por día" se guardan como las 00:00 AR del día siguiente
+(`PeriodCalculator.startOfDayAfter`), y `NoticePolicy.daysUntil` cuenta hasta
+el último día con acceso.
+
+Día ancla: `billing_anchor_day` (1–31) se fija con el primer período pago y
+mantiene el día de vencimiento sin deriva de fin de mes (31/01 → 28/02 →
+31/03 → 30/04). Si es null, se deriva de `current_period_start`. Un calendario
+nuevo (pago tras baja o suspensión, trial) se ancla en su propio inicio; un fin
+explícito (pago manual con `periodEnd` o reactivación) ancla en el día de ese
+fin.
 
 ## Errores
 
@@ -154,7 +201,7 @@ Las mutaciones por API toman la fila con `PESSIMISTIC_WRITE` y además hay
 | Excepción | HTTP |
 |---|---|
 | `SubscriptionNotFoundException`, `PlanNotFoundException`, `PlanPriceNotFoundException` | 404 |
-| `InvalidSubscriptionTransitionException`, `SamePlanException`, `CheckoutNotAllowedException`, `Duplicate*Exception`, `PriceAlreadyEffectiveException` | 409 |
+| `InvalidSubscriptionTransitionException`, `SamePlanException`, `CheckoutNotAllowedException`, `Duplicate*Exception`, `PriceAlreadyEffectiveException`, `SubscriptionAdminSuspendedException` | 409 |
 | `PlanWithoutPriceException`, `GatewayRejectedException` | 422 |
 | validación, `InvalidBillingRequestException` | 400 |
 | `GatewayUnavailableException` | 502 |
@@ -180,7 +227,19 @@ Importes `NUMERIC(12,2)` y `BigDecimal` con escala 2 y `HALF_UP`. Nunca
 `America/Argentina/Buenos_Aires`.
 
 Los precios son inmutables: un cambio de precio es una fila nueva en
-`plan_prices` con `valid_from`. Solo se puede borrar un precio futuro.
+`plan_prices` con `valid_from` estrictamente futuro. Solo se puede borrar un
+precio futuro.
+
+Los importes que llegan por API (`ManualPaymentRequest`, `PlanPriceRequest`)
+llevan `@Digits(integer = 10, fraction = 2)` y `Amounts.requirePositiveMoney`:
+más de 2 decimales significativos es 400, nunca se redondea en silencio.
+
+Pago manual: `reference` es obligatoria y es la clave de idempotencia por
+tenant (`uq_payments_manual_reference`). Reintentar con la misma referencia y
+el mismo importe devuelve el pago original con 200 sin aplicar otro período;
+la primera vez es 201. Misma referencia con otro importe: 409
+`DUPLICATE_PAYMENT`. Con suspensión administrativa: 409
+`SUBSCRIPTION_ADMIN_SUSPENDED` sin persistir nada (hay que reactivar primero).
 
 ## Configuración
 
@@ -190,7 +249,12 @@ bytes), `BILLING_INTERNAL_API_KEY`.
 Opcionales: `URL_FRONT`, `BILLING_PUBLIC_BASE_URL`, `BILLING_CHECKOUT_BACK_URL`,
 `BILLING_TRIAL_DAYS` (14), `BILLING_TRIAL_PLAN_CODE` (PRO),
 `BILLING_TRIAL_GRACE_DAYS` (3), `BILLING_GRACE_DAYS` (7),
-`BILLING_CHECKOUT_EXPIRATION_HOURS` (48), `BILLING_JOBS_ENABLED` (true), `PORT`.
+`BILLING_CHECKOUT_EXPIRATION_HOURS` (48), `BILLING_JOBS_ENABLED` (true),
+`SPRINGDOC_ENABLED` (true), `PORT`.
+
+`SPRINGDOC_ENABLED` vale `true` por defecto para desarrollo local. En
+producción configurarlo en `false`: apaga `/api-docs` y Swagger UI y la
+cadena de seguridad deja de permitir esas rutas.
 
 PR1b agrega `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET` y
 `MP_WEBHOOK_REQUIRE_SIGNATURE`.

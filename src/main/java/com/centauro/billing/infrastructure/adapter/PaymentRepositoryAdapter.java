@@ -7,7 +7,9 @@ import com.centauro.billing.infrastructure.jpa.entity.PaymentEntity;
 import com.centauro.billing.infrastructure.jpa.repository.PaymentJpaRepository;
 import org.springframework.stereotype.Component;
 
+import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Component
@@ -46,13 +48,14 @@ public class PaymentRepositoryAdapter implements PaymentRepositoryPort {
     }
 
     @Override
-    public boolean markApplied(UUID paymentId) {
-        return repository.markApplied(paymentId) > 0;
+    public boolean markApplied(UUID paymentId, OffsetDateTime now) {
+        return repository.markApplied(paymentId, now) > 0;
     }
 
     @Override
-    public boolean existsManualReference(String tenantId, String reference) {
-        return repository.existsByTenantIdAndSourceAndReference(tenantId, PaymentSource.MANUAL, reference);
+    public Optional<Payment> findManualByReference(String tenantId, String reference) {
+        return repository.findByTenantIdAndSourceAndReference(tenantId, PaymentSource.MANUAL, reference)
+                .map(PaymentRepositoryAdapter::toDomain);
     }
 
     @Override

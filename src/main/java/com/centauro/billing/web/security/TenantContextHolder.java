@@ -1,5 +1,6 @@
 package com.centauro.billing.web.security;
 
+import com.centauro.billing.domain.vo.Actor;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
 import org.springframework.security.core.Authentication;
@@ -34,5 +35,15 @@ public final class TenantContextHolder {
 
     public static String currentSubject() {
         return requireClaims().subject();
+    }
+
+    public static Actor platformAdminActor() {
+        JwtClaims claims = requireClaims();
+        return Actor.platformAdmin(claims.subject(), claims.userId());
+    }
+
+    public static Actor tenantUserActor() {
+        JwtClaims claims = requireClaims();
+        return Actor.tenantUser(claims.subject(), claims.userId());
     }
 }

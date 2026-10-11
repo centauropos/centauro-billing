@@ -16,7 +16,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Function;
 import java.util.function.Predicate;
 
 public class InMemorySubscriptionRepository implements SubscriptionRepositoryPort {
@@ -68,21 +67,21 @@ public class InMemorySubscriptionRepository implements SubscriptionRepositoryPor
     }
 
     @Override
-    public List<UUID> findTrialsDue(OffsetDateTime now, int limit) {
+    public List<UUID> findTrialsDue(OffsetDateTime now, UUID afterId, int limit) {
         return due(s -> s.getStatus() == SubscriptionStatus.TRIALING && !s.getTrialEndsAt().isAfter(now),
-                Subscription::getTrialEndsAt, limit);
+                afterId, limit);
     }
 
     @Override
-    public List<UUID> findPeriodsDue(OffsetDateTime now, int limit) {
+    public List<UUID> findPeriodsDue(OffsetDateTime now, UUID afterId, int limit) {
         return due(s -> s.getStatus() == SubscriptionStatus.ACTIVE && !s.getCurrentPeriodEnd().isAfter(now),
-                Subscription::getCurrentPeriodEnd, limit);
+                afterId, limit);
     }
 
     @Override
-    public List<UUID> findGraceDue(OffsetDateTime now, int limit) {
+    public List<UUID> findGraceDue(OffsetDateTime now, UUID afterId, int limit) {
         return due(s -> s.getStatus() == SubscriptionStatus.PAST_DUE && !s.getGraceEndsAt().isAfter(now),
-                Subscription::getGraceEndsAt, limit);
+                afterId, limit);
     }
 
     @Override
@@ -94,8 +93,11 @@ public class InMemorySubscriptionRepository implements SubscriptionRepositoryPor
         return new PageResult<>(content, pageQuery.page(), pageQuery.size(), content.size(), 1);
     }
 
-    private List<UUID> due(Predicate<Subscription> filter, Function<Subscription, OffsetDateTime> order, int limit) {
-        return byId.values().stream().filter(filter).sorted(Comparator.comparing(order))
-                .limit(limit).map(Subscription::getId).toList();
+    /** Mismo orden que PostgreSQL sobre uuid: lexicográfico del texto (no el compareTo con signo de Java). */
+    private List<UUID> due(Predicate<Subscription> filter, UUID afterId, int limit) {
+        return byId.values().stream().filter(filter).map(Subscription::getId)
+                .filter(id -> id.toString().compareTo(afterId.toString()) > 0)
+                .sorted(Comparator.comparing(UUID::toString))
+                .limit(limit).toList();
     }
 }

@@ -199,7 +199,7 @@ class SubscriptionTransitionsTest {
             Subscription s = inState(status);
             UUID paymentId = UUID.randomUUID();
 
-            SubscriptionEvent event = s.applyPayment(paymentId, NOW, NOW.plusMonths(1), GatewayName.MANUAL, ADMIN,
+            SubscriptionEvent event = s.applyPayment(paymentId, NOW, NOW.plusMonths(1), 11, GatewayName.MANUAL, ADMIN,
                     "transferencia", NOW);
 
             assertThat(s.getStatus()).isEqualTo(ACTIVE);
@@ -208,6 +208,7 @@ class SubscriptionTransitionsTest {
             assertThat(s.getSuspensionReason()).isNull();
             assertThat(s.getPastDueReason()).isNull();
             assertThat(s.getGateway()).isEqualTo(GatewayName.MANUAL);
+            assertThat(s.getBillingAnchorDay()).isEqualTo(11);
             assertThat(event.dedupeKey()).isEqualTo("PAYMENT_APPLIED:" + paymentId);
         }
 
@@ -216,7 +217,7 @@ class SubscriptionTransitionsTest {
         void t5_paymentWithAdminSuspensionDoesNotReactivate(SuspensionReason reason) {
             Subscription s = subscription().status(SUSPENDED).suspensionReason(reason).build();
 
-            assertThatThrownBy(() -> s.applyPayment(UUID.randomUUID(), NOW, NOW.plusMonths(1), GatewayName.MANUAL,
+            assertThatThrownBy(() -> s.applyPayment(UUID.randomUUID(), NOW, NOW.plusMonths(1), 11, GatewayName.MANUAL,
                     ADMIN, "x", NOW)).isInstanceOf(InvalidSubscriptionTransitionException.class);
 
             SubscriptionEvent recorded = s.recordPaymentWithoutReactivation(UUID.randomUUID(), ADMIN, "x", NOW);
@@ -228,7 +229,7 @@ class SubscriptionTransitionsTest {
         void t5_paymentOnCanceledClearsCancellation() {
             Subscription s = inState(CANCELED);
 
-            s.applyPayment(UUID.randomUUID(), NOW, NOW.plusMonths(1), GatewayName.MANUAL, ADMIN, "x", NOW);
+            s.applyPayment(UUID.randomUUID(), NOW, NOW.plusMonths(1), 11, GatewayName.MANUAL, ADMIN, "x", NOW);
 
             assertThat(s.getCanceledAt()).isNull();
             assertThat(s.isCancelAtPeriodEnd()).isFalse();
@@ -339,24 +340,25 @@ class SubscriptionTransitionsTest {
         void t12_reactivate(SubscriptionStatus status) {
             Subscription s = inState(status);
 
-            s.reactivate(NOW.plusDays(30), ADMIN, "acuerdo", NOW);
+            s.reactivate(NOW.plusDays(30), 10, ADMIN, "acuerdo", NOW);
 
             assertThat(s.getStatus()).isEqualTo(ACTIVE);
             assertThat(s.getCurrentPeriodEnd()).isEqualTo(NOW.plusDays(30));
+            assertThat(s.getBillingAnchorDay()).isEqualTo(10);
             assertThat(s.getSuspensionReason()).isNull();
             assertThat(s.getCanceledAt()).isNull();
         }
 
         @Test
         void t12_reactivateRequiresFutureEnd() {
-            assertThatThrownBy(() -> inState(SUSPENDED).reactivate(NOW, ADMIN, "x", NOW))
+            assertThatThrownBy(() -> inState(SUSPENDED).reactivate(NOW, 11, ADMIN, "x", NOW))
                     .isInstanceOf(InvalidBillingRequestException.class);
         }
 
         @ParameterizedTest
         @EnumSource(value = SubscriptionStatus.class, names = {"TRIALING", "ACTIVE", "PAST_DUE"})
         void t12_reactivateFromOtherStatesIsInvalid(SubscriptionStatus status) {
-            assertThatThrownBy(() -> inState(status).reactivate(NOW.plusDays(30), ADMIN, "x", NOW))
+            assertThatThrownBy(() -> inState(status).reactivate(NOW.plusDays(30), 10, ADMIN, "x", NOW))
                     .isInstanceOf(InvalidSubscriptionTransitionException.class);
         }
 

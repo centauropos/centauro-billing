@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.nio.charset.StandardCharsets;
@@ -59,6 +60,21 @@ class JwtTokenFilterTest {
         filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
 
         assertThat(TenantContextHolder.requireClaims().role()).isEqualTo("ADMIN");
+    }
+
+    @Test
+    void roleNamedPlatformAdminIsNotMappedAsThePlatformAuthority() throws Exception {
+        MockHttpServletRequest request = withToken(token(SECRET, Map.of("tenantId", "t-1", "id", 7,
+                "role", "PLATFORM_ADMIN", "permissions", List.of("SALES_CREATE"))));
+
+        filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
+
+        var authorities = SecurityContextHolder.getContext().getAuthentication().getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority).toList();
+        assertThat(authorities).containsExactlyInAnyOrder("ROLE_PLATFORM_ADMIN", "SALES_CREATE")
+                .doesNotContain(BillingAuthorization.PLATFORM_ADMIN);
+        assertThat(BillingAuthorization.isPlatformAdmin(TenantContextHolder.requireClaims())).isFalse();
+        assertThat(TenantContextHolder.requireClaims().userId()).isEqualTo("7");
     }
 
     @Test

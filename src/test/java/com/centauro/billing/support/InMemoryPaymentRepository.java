@@ -4,9 +4,11 @@ import com.centauro.billing.domain.enums.PaymentSource;
 import com.centauro.billing.domain.model.Payment;
 import com.centauro.billing.domain.port.PaymentRepositoryPort;
 
+import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 public class InMemoryPaymentRepository implements PaymentRepositoryPort {
@@ -20,7 +22,7 @@ public class InMemoryPaymentRepository implements PaymentRepositoryPort {
     }
 
     @Override
-    public boolean markApplied(UUID paymentId) {
+    public boolean markApplied(UUID paymentId, OffsetDateTime now) {
         Payment current = payments.get(paymentId);
         if (current == null || current.applied()) {
             return false;
@@ -30,9 +32,9 @@ public class InMemoryPaymentRepository implements PaymentRepositoryPort {
     }
 
     @Override
-    public boolean existsManualReference(String tenantId, String reference) {
-        return payments.values().stream().anyMatch(p -> p.source() == PaymentSource.MANUAL
-                && p.tenantId().equals(tenantId) && reference.equals(p.reference()));
+    public Optional<Payment> findManualByReference(String tenantId, String reference) {
+        return payments.values().stream().filter(p -> p.source() == PaymentSource.MANUAL
+                && p.tenantId().equals(tenantId) && reference.equals(p.reference())).findFirst();
     }
 
     @Override

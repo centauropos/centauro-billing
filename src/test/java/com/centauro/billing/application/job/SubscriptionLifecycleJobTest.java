@@ -12,6 +12,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.centauro.billing.support.TestFixtures.NOW;
 import static com.centauro.billing.support.TestFixtures.TERMS;
@@ -54,11 +57,12 @@ class SubscriptionLifecycleJobTest {
         assertThat(expiredPeriod.getStatus()).isEqualTo(SubscriptionStatus.PAST_DUE);
         assertThat(expiredGrace.getStatus()).isEqualTo(SubscriptionStatus.SUSPENDED);
         assertThat(healthy.getStatus()).isEqualTo(SubscriptionStatus.TRIALING);
-        assertThat(events.types()).containsExactly(
-                SubscriptionEventType.TRIAL_EXPIRED,
-                SubscriptionEventType.TRIAL_ENDED_CANCELED,
-                SubscriptionEventType.PERIOD_UNPAID,
-                SubscriptionEventType.SUSPENDED_NON_PAYMENT);
+        List<SubscriptionEventType> types = events.types();
+        assertThat(types).hasSize(4);
+        assertThat(types.subList(0, 2)).containsExactlyInAnyOrder(
+                SubscriptionEventType.TRIAL_EXPIRED, SubscriptionEventType.TRIAL_ENDED_CANCELED);
+        assertThat(types.subList(2, 4)).containsExactly(
+                SubscriptionEventType.PERIOD_UNPAID, SubscriptionEventType.SUSPENDED_NON_PAYMENT);
         assertThat(lock.keys).containsExactly(SubscriptionLifecycleJob.LOCK_KEY);
     }
 
@@ -104,6 +108,38 @@ class SubscriptionLifecycleJobTest {
 
         assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.TRIALING);
         assertThat(events.events).isEmpty();
+    }
+
+    @Test
+    void rowsThatAlwaysFailDoNotBlockTheRestOfTheBatch() {
+        List<Subscription> due = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            due.add(store(subscription().tenantId("t" + i).trialEndsAt(NOW.minusHours(1)).build()));
+        }
+        List<UUID> byCursorOrder = due.stream().map(Subscription::getId)
+                .sorted(java.util.Comparator.comparing(UUID::toString)).toList();
+        Set<UUID> failing = Set.copyOf(byCursorOrder.subList(0, 4));
+        AtomicInteger attempts = new AtomicInteger();
+        LifecycleStepProcessor flaky = new LifecycleStepProcessor(subscriptions, events, TERMS) {
+            @Override
+            public boolean expireTrial(UUID subscriptionId, java.time.OffsetDateTime now) {
+                if (failing.contains(subscriptionId)) {
+                    attempts.incrementAndGet();
+                    throw new IllegalStateException("fila corrupta");
+                }
+                return super.expireTrial(subscriptionId, now);
+            }
+        };
+        SubscriptionLifecycleJob smallBatches = new SubscriptionLifecycleJob(subscriptions, flaky, lock,
+                clockAt(NOW), 2);
+
+        smallBatches.run();
+
+        assertThat(due).filteredOn(s -> !failing.contains(s.getId()))
+                .allSatisfy(s -> assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.PAST_DUE));
+        assertThat(due).filteredOn(s -> failing.contains(s.getId()))
+                .allSatisfy(s -> assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.TRIALING));
+        assertThat(attempts).hasValue(4);
     }
 
     private Subscription store(Subscription s) {

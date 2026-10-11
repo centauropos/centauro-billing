@@ -127,7 +127,7 @@ public class PlatformSubscriptionUseCase {
         if (hasDays) {
             OffsetDateTime current = subscription.getTrialEndsAt();
             OffsetDateTime base = current != null && current.isAfter(now) ? current : now;
-            newEnd = periodCalculator.endOfDayPlusDays(base, request.days());
+            newEnd = periodCalculator.startOfDayAfter(base, request.days());
         }
         SubscriptionEvent event = subscription.extendTrial(newEnd, actor, request.reason(), now);
         return persist(subscription, event, now);
@@ -138,15 +138,21 @@ public class PlatformSubscriptionUseCase {
         OffsetDateTime now = OffsetDateTime.now(clock);
         Subscription subscription = lock(tenantId);
         Plan plan = plans.findByCode(request.planCode())
+                .filter(Plan::isActive)
                 .orElseThrow(() -> new PlanNotFoundException(request.planCode()));
         PlanPrice price = plan.currentPrice(now)
                 .orElseThrow(() -> new PlanWithoutPriceException(request.planCode()));
+        boolean syncGateway = !Boolean.FALSE.equals(request.syncGateway());
+        if (syncGateway) {
+            gatewayOperations.requireAvailable(subscription);
+        }
         SubscriptionEvent event = subscription.changePlan(plan.getId(), plan.getCode(), price.amount(), actor,
                 request.reason(), now);
-        if (!Boolean.FALSE.equals(request.syncGateway())) {
-            gatewayOperations.updateAmount(subscription, price.amount());
+        TenantSubscriptionView view = persist(subscription, event, now);
+        if (syncGateway) {
+            gatewayOperations.updateAmountAfterCommit(subscription, price.amount());
         }
-        return persist(subscription, event, now);
+        return view;
     }
 
     @Transactional
@@ -163,7 +169,9 @@ public class PlatformSubscriptionUseCase {
     public TenantSubscriptionView reactivate(String tenantId, ReactivateRequest request, Actor actor) {
         OffsetDateTime now = OffsetDateTime.now(clock);
         Subscription subscription = lock(tenantId);
-        SubscriptionEvent event = subscription.reactivate(request.currentPeriodEnd(), actor, request.reason(), now);
+        OffsetDateTime newEnd = request.currentPeriodEnd();
+        int anchorDay = newEnd == null ? 1 : periodCalculator.dayOf(newEnd);
+        SubscriptionEvent event = subscription.reactivate(newEnd, anchorDay, actor, request.reason(), now);
         return persist(subscription, event, now);
     }
 
@@ -171,11 +179,13 @@ public class PlatformSubscriptionUseCase {
     public TenantSubscriptionView cancel(String tenantId, PlatformCancelRequest request, Actor actor) {
         OffsetDateTime now = OffsetDateTime.now(clock);
         Subscription subscription = lock(tenantId);
+        gatewayOperations.requireAvailable(subscription);
         SubscriptionEvent event = Boolean.TRUE.equals(request.immediate())
                 ? subscription.cancelImmediately(actor, request.reason(), now)
                 : subscription.cancel(actor, request.reason(), now);
-        gatewayOperations.cancel(subscription);
-        return persist(subscription, event, now);
+        TenantSubscriptionView view = persist(subscription, event, now);
+        gatewayOperations.cancelAfterCommit(subscription);
+        return view;
     }
 
     private TenantSubscriptionView persist(Subscription subscription, SubscriptionEvent event, OffsetDateTime now) {

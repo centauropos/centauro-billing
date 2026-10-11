@@ -7,6 +7,7 @@ import com.centauro.billing.application.service.SubscriptionViewAssembler;
 import com.centauro.billing.domain.enums.GatewayName;
 import com.centauro.billing.domain.exception.DuplicatePaymentException;
 import com.centauro.billing.domain.exception.InvalidBillingRequestException;
+import com.centauro.billing.domain.exception.SubscriptionAdminSuspendedException;
 import com.centauro.billing.domain.exception.SubscriptionNotFoundException;
 import com.centauro.billing.domain.model.Payment;
 import com.centauro.billing.domain.model.Subscription;
@@ -23,8 +24,12 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.OffsetDateTime;
+import java.util.Optional;
 
-/** Pago manual registrado desde el backoffice (T5 sin pasarela). */
+/**
+ * Pago manual registrado desde el backoffice (T5 sin pasarela). Idempotente por {@code (tenant, reference)}:
+ * reintentar con la misma referencia devuelve el pago original sin aplicar otro período.
+ */
 @Service
 public class ManualPaymentUseCase {
 
@@ -52,20 +57,28 @@ public class ManualPaymentUseCase {
     @Transactional
     public ManualPaymentResult register(String tenantId, ManualPaymentRequest request, Actor actor) {
         TenantIds.requireValid(tenantId);
-        if (request.amount() == null || request.amount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new InvalidBillingRequestException("El importe debe ser mayor a cero");
-        }
+        BigDecimal amount = Amounts.requirePositiveMoney(request.amount());
         if (request.currency() != null && !Amounts.CURRENCY_ARS.equals(request.currency())) {
             throw new InvalidBillingRequestException("La única moneda admitida es ARS");
         }
-        String reference = request.reference() == null || request.reference().isBlank()
-                ? null : request.reference().trim();
+        if (request.reference() == null || request.reference().isBlank()) {
+            throw new InvalidBillingRequestException("La referencia del pago es obligatoria");
+        }
+        String reference = request.reference().trim();
 
         OffsetDateTime now = OffsetDateTime.now(clock);
+        // El bloqueo de la suscripción serializa los reintentos concurrentes con la misma referencia.
         Subscription subscription = subscriptions.findByTenantIdForUpdate(tenantId)
                 .orElseThrow(() -> new SubscriptionNotFoundException(tenantId));
-        if (reference != null && payments.existsManualReference(tenantId, reference)) {
-            throw new DuplicatePaymentException(reference);
+        Optional<Payment> existing = payments.findManualByReference(tenantId, reference);
+        if (existing.isPresent()) {
+            if (existing.get().amount().compareTo(amount) != 0) {
+                throw new DuplicatePaymentException(reference);
+            }
+            return result(existing.get(), subscription, now, false);
+        }
+        if (subscription.isAdminSuspended()) {
+            throw new SubscriptionAdminSuspendedException(tenantId);
         }
 
         PeriodCalculator.Period period = periodCalculator.nextPeriod(subscription, now, request.periodEnd());
@@ -73,14 +86,19 @@ public class ManualPaymentUseCase {
             throw new InvalidBillingRequestException("El fin del período debe ser posterior a "
                     + assembler.local(period.start()));
         }
-        Payment payment = payments.save(Payment.manual(subscription, request.amount(),
+        Payment payment = payments.save(Payment.manual(subscription, amount,
                 request.paidAt() != null ? request.paidAt() : now, period.start(), period.end(), reference,
                 request.notes(), actor.name(), now));
 
-        PaymentApplier.Result result = paymentApplier.apply(subscription, payment, GatewayName.MANUAL, actor,
-                request.reason(), now);
-        Subscription current = result.subscription();
-        return new ManualPaymentResult(assembler.paymentView(result.payment()),
-                assembler.tenantView(current, plans.findById(current.getPlanId()).orElse(null), now));
+        PaymentApplier.Result applied = paymentApplier.apply(subscription, payment, period.anchorDay(),
+                GatewayName.MANUAL, actor, request.reason(), now);
+        return result(applied.payment(), applied.subscription(), now, true);
+    }
+
+    private ManualPaymentResult result(Payment payment, Subscription subscription, OffsetDateTime now,
+                                       boolean created) {
+        return new ManualPaymentResult(assembler.paymentView(payment),
+                assembler.tenantView(subscription, plans.findById(subscription.getPlanId()).orElse(null), now),
+                created);
     }
 }

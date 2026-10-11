@@ -25,6 +25,8 @@ import com.centauro.billing.support.InMemoryPlanRepository;
 import com.centauro.billing.support.InMemorySubscriptionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -121,6 +123,74 @@ class TenantSubscriptionUseCaseTest {
         useCase(Optional.of(gateway)).cancel("tenant-1", null, OWNER);
 
         assertThat(gateway.canceled).containsExactly("pre-123");
+    }
+
+    @Test
+    void withActiveTransactionTheGatewayIsCalledOnlyAfterCommit() {
+        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+                .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-123").build());
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            useCase(Optional.of(gateway)).cancel("tenant-1", null, OWNER);
+            assertThat(gateway.canceled).isEmpty();
+
+            TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
+            assertThat(gateway.canceled).containsExactly("pre-123");
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    void rollbackNeverReachesTheGateway() {
+        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+                .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-9").build());
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            useCase(Optional.of(gateway)).changePlan("tenant-1", "BASICO", OWNER);
+            TransactionSynchronizationManager.getSynchronizations()
+                    .forEach(sync -> sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK));
+
+            assertThat(gateway.amountUpdates).isEmpty();
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    void failedOperationDoesNotCallOrScheduleTheGateway() {
+        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.CANCELED)
+                .gatewaySubscriptionId("pre-7").build());
+        TenantSubscriptionUseCase useCase = useCase(Optional.of(gateway));
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertThatThrownBy(() -> useCase.cancel("tenant-1", null, OWNER))
+                    .isInstanceOf(InvalidSubscriptionTransitionException.class);
+            assertThatThrownBy(() -> useCase.changePlan("tenant-1", "BASICO", OWNER))
+                    .isInstanceOf(InvalidSubscriptionTransitionException.class);
+
+            assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+        assertThat(gateway.canceled).isEmpty();
+        assertThat(gateway.amountUpdates).isEmpty();
+    }
+
+    @Test
+    void gatewayErrorAfterCommitIsLoggedAndDoesNotPropagate() {
+        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+                .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-1").build());
+        gateway.failure = new IllegalStateException("MP caído");
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            TenantSubscriptionView view = useCase(Optional.of(gateway)).cancel("tenant-1", null, OWNER);
+
+            TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
+            assertThat(view.cancelAtPeriodEnd()).isTrue();
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test

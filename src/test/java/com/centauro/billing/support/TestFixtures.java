@@ -56,6 +56,7 @@ public final class TestFixtures {
         private OffsetDateTime trialEndsAt = NOW.plusDays(14);
         private OffsetDateTime currentPeriodStart;
         private OffsetDateTime currentPeriodEnd;
+        private Integer billingAnchorDay;
         private OffsetDateTime graceEndsAt;
         private boolean cancelAtPeriodEnd;
         private BigDecimal priceAmount = new BigDecimal("25000.00");
@@ -70,6 +71,7 @@ public final class TestFixtures {
         public Builder trialEndsAt(OffsetDateTime value) { trialEndsAt = value; return this; }
         public Builder currentPeriodStart(OffsetDateTime value) { currentPeriodStart = value; return this; }
         public Builder currentPeriodEnd(OffsetDateTime value) { currentPeriodEnd = value; return this; }
+        public Builder billingAnchorDay(Integer value) { billingAnchorDay = value; return this; }
         public Builder graceEndsAt(OffsetDateTime value) { graceEndsAt = value; return this; }
         public Builder cancelAtPeriodEnd(boolean value) { cancelAtPeriodEnd = value; return this; }
         public Builder priceAmount(BigDecimal value) { priceAmount = value; return this; }
@@ -81,7 +83,8 @@ public final class TestFixtures {
 
         public Subscription build() {
             return new Subscription(UUID.randomUUID(), tenantId, planId, status, suspensionReason, pastDueReason,
-                    trialEndsAt, currentPeriodStart, currentPeriodEnd, graceEndsAt, cancelAtPeriodEnd, null, null,
+                    trialEndsAt, currentPeriodStart, currentPeriodEnd, billingAnchorDay, graceEndsAt,
+                    cancelAtPeriodEnd, null, null,
                     priceAmount, "ARS", gateway, gatewaySubscriptionId, null, null, null, "owner@test.com",
                     "Empresa Test", 0L, NOW.minusDays(30));
         }

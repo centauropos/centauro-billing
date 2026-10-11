@@ -16,6 +16,7 @@ import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.PlanPrice;
 import com.centauro.billing.domain.port.PlanRepositoryPort;
 import com.centauro.billing.domain.vo.Actor;
+import com.centauro.billing.domain.vo.Amounts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -62,7 +63,7 @@ public class PlanAdminUseCase {
                 request.active() == null || request.active(), Boolean.TRUE.equals(request.publicVisible()),
                 request.sortOrder() == null ? 0 : request.sortOrder(), request.features(), request.limits());
         Plan saved = plans.save(plan);
-        log.info("Plan creado code={} por={}", saved.getCode(), actor.name());
+        log.info("Plan creado code={} por={}", saved.getCode(), actor.logId());
         return assembler.planAdminView(saved, OffsetDateTime.now(clock));
     }
 
@@ -76,7 +77,7 @@ public class PlanAdminUseCase {
                 request.features() == null ? plan.getFeatures() : request.features(),
                 request.limits() == null ? plan.getLimits() : request.limits());
         plans.save(plan);
-        log.info("Plan actualizado code={} por={}", code, actor.name());
+        log.info("Plan actualizado code={} por={}", code, actor.logId());
         return assembler.planAdminView(requirePlan(code), OffsetDateTime.now(clock));
     }
 
@@ -90,16 +91,17 @@ public class PlanAdminUseCase {
 
     @Transactional
     public PlanPriceView addPrice(String code, PlanPriceRequest request, Actor actor) {
-        if (request.amount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new InvalidBillingRequestException("El importe debe ser mayor a cero");
+        BigDecimal amount = Amounts.requirePositiveMoney(request.amount());
+        if (request.validFrom() == null || !request.validFrom().isAfter(OffsetDateTime.now(clock))) {
+            throw new InvalidBillingRequestException("validFrom tiene que ser posterior al momento actual");
         }
         Plan plan = requirePlan(code);
         if (plans.existsPrice(plan.getId(), request.validFrom())) {
             throw new DuplicatePlanPriceException(code);
         }
-        PlanPrice saved = plans.savePrice(PlanPrice.create(plan.getId(), request.amount(), request.validFrom(),
+        PlanPrice saved = plans.savePrice(PlanPrice.create(plan.getId(), amount, request.validFrom(),
                 actor.name()));
-        log.info("Precio agregado plan={} validFrom={} por={}", code, saved.validFrom(), actor.name());
+        log.info("Precio agregado plan={} validFrom={} por={}", code, saved.validFrom(), actor.logId());
         return assembler.priceView(saved);
     }
 
@@ -113,7 +115,7 @@ public class PlanAdminUseCase {
             throw new PriceAlreadyEffectiveException(priceId.toString());
         }
         plans.deletePrice(priceId);
-        log.info("Precio futuro borrado plan={} priceId={} por={}", code, priceId, actor.name());
+        log.info("Precio futuro borrado plan={} priceId={} por={}", code, priceId, actor.logId());
     }
 
     private Plan requirePlan(String code) {

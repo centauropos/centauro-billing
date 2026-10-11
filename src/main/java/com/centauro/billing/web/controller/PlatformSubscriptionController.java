@@ -102,8 +102,8 @@ public class PlatformSubscriptionController {
     @PostMapping("/{tenantId}/payments")
     public ResponseEntity<ManualPaymentResult> registerPayment(@PathVariable String tenantId,
                                                                @Valid @RequestBody ManualPaymentRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(manualPaymentUseCase.register(tenantId, request, actor()));
+        ManualPaymentResult result = manualPaymentUseCase.register(tenantId, request, actor());
+        return ResponseEntity.status(result.created() ? HttpStatus.CREATED : HttpStatus.OK).body(result);
     }
 
     @PostMapping("/{tenantId}/suspend")
@@ -124,6 +124,6 @@ public class PlatformSubscriptionController {
     }
 
     private static Actor actor() {
-        return Actor.platformAdmin(TenantContextHolder.currentSubject());
+        return TenantContextHolder.platformAdminActor();
     }
 }

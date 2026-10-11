@@ -1,12 +1,15 @@
 package com.centauro.billing.domain.policy;
 
+import com.centauro.billing.domain.enums.GatewayName;
 import com.centauro.billing.domain.enums.PastDueReason;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
 import com.centauro.billing.domain.enums.SuspensionReason;
 import com.centauro.billing.domain.model.Subscription;
+import com.centauro.billing.domain.vo.Actor;
 import org.junit.jupiter.api.Test;
 
 import java.time.OffsetDateTime;
+import java.util.UUID;
 
 import static com.centauro.billing.support.TestFixtures.AR;
 import static com.centauro.billing.support.TestFixtures.AR_OFFSET;
@@ -74,7 +77,7 @@ class PeriodCalculatorTest {
     }
 
     @Test
-    void manualPeriodEndWins() {
+    void manualPeriodEndWinsAndBecomesTheAnchor() {
         OffsetDateTime manualEnd = NOW.plusDays(90);
         Subscription s = subscription().status(SubscriptionStatus.CANCELED).build();
 
@@ -82,14 +85,60 @@ class PeriodCalculatorTest {
 
         assertThat(period.start()).isEqualTo(NOW);
         assertThat(period.end()).isEqualTo(manualEnd);
+        assertThat(period.anchorDay()).isEqualTo(manualEnd.getDayOfMonth());
     }
 
     @Test
-    void endOfDayPlusDaysUsesArgentineCalendarDay() {
+    void chainedRenewalsKeepTheAnchorDayWithoutDrift() {
+        OffsetDateTime jan31 = OffsetDateTime.of(2026, 1, 31, 10, 0, 0, 0, AR_OFFSET);
+        Subscription s = subscription().status(SubscriptionStatus.ACTIVE).currentPeriodStart(jan31.minusMonths(1))
+                .currentPeriodEnd(jan31).billingAnchorDay(31).build();
+
+        PeriodCalculator.Period feb = calculator.nextPeriod(s, jan31, null);
+        s.applyPayment(UUID.randomUUID(), feb.start(), feb.end(), feb.anchorDay(), GatewayName.MANUAL,
+                Actor.platformAdmin("admin"), null, jan31);
+        PeriodCalculator.Period mar = calculator.nextPeriod(s, feb.end(), null);
+        s.applyPayment(UUID.randomUUID(), mar.start(), mar.end(), mar.anchorDay(), GatewayName.MANUAL,
+                Actor.platformAdmin("admin"), null, feb.end());
+        PeriodCalculator.Period apr = calculator.nextPeriod(s, mar.end(), null);
+
+        assertThat(feb.start().toLocalDate()).hasToString("2026-01-31");
+        assertThat(feb.end().toLocalDate()).hasToString("2026-02-28");
+        assertThat(mar.end().toLocalDate()).hasToString("2026-03-31");
+        assertThat(apr.end().toLocalDate()).hasToString("2026-04-30");
+        assertThat(apr.end().toLocalTime()).isEqualTo(jan31.toLocalTime());
+        assertThat(apr.anchorDay()).isEqualTo(31);
+    }
+
+    @Test
+    void missingAnchorIsDerivedFromCurrentPeriodStart() {
+        OffsetDateTime start = OffsetDateTime.of(2026, 1, 31, 10, 0, 0, 0, AR_OFFSET);
+        OffsetDateTime end = OffsetDateTime.of(2026, 2, 28, 10, 0, 0, 0, AR_OFFSET);
+        Subscription s = subscription().status(SubscriptionStatus.ACTIVE).currentPeriodStart(start)
+                .currentPeriodEnd(end).build();
+
+        PeriodCalculator.Period period = calculator.nextPeriod(s, end, null);
+
+        assertThat(period.anchorDay()).isEqualTo(31);
+        assertThat(period.end().toLocalDate()).hasToString("2026-03-31");
+    }
+
+    @Test
+    void newCalendarIsAnchoredAtItsOwnStart() {
+        Subscription canceled = subscription().status(SubscriptionStatus.CANCELED).billingAnchorDay(31).build();
+
+        PeriodCalculator.Period period = calculator.nextPeriod(canceled, NOW, null);
+
+        assertThat(period.anchorDay()).isEqualTo(11);
+        assertThat(period.end()).isEqualTo(NOW.plusMonths(1));
+    }
+
+    @Test
+    void startOfDayAfterUsesArgentineCalendarDayAndIsExclusive() {
         OffsetDateTime lateUtc = OffsetDateTime.parse("2026-10-12T02:30:00Z");
 
-        OffsetDateTime result = calculator.endOfDayPlusDays(lateUtc, 14);
+        OffsetDateTime result = calculator.startOfDayAfter(lateUtc, 14);
 
-        assertThat(result).isEqualTo(OffsetDateTime.of(2026, 10, 25, 23, 59, 59, 0, AR_OFFSET));
+        assertThat(result).isEqualTo(OffsetDateTime.of(2026, 10, 26, 0, 0, 0, 0, AR_OFFSET));
     }
 }

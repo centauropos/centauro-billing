@@ -73,6 +73,6 @@ public class PlatformPlanController {
     }
 
     private static Actor actor() {
-        return Actor.platformAdmin(TenantContextHolder.currentSubject());
+        return TenantContextHolder.platformAdminActor();
     }
 }

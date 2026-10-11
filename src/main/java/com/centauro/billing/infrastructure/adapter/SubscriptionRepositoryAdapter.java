@@ -73,18 +73,18 @@ public class SubscriptionRepositoryAdapter implements SubscriptionRepositoryPort
     }
 
     @Override
-    public List<UUID> findTrialsDue(OffsetDateTime now, int limit) {
-        return repository.findTrialsDue(now, limit);
+    public List<UUID> findTrialsDue(OffsetDateTime now, UUID afterId, int limit) {
+        return repository.findTrialsDue(now, afterId, limit);
     }
 
     @Override
-    public List<UUID> findPeriodsDue(OffsetDateTime now, int limit) {
-        return repository.findPeriodsDue(now, limit);
+    public List<UUID> findPeriodsDue(OffsetDateTime now, UUID afterId, int limit) {
+        return repository.findPeriodsDue(now, afterId, limit);
     }
 
     @Override
-    public List<UUID> findGraceDue(OffsetDateTime now, int limit) {
-        return repository.findGraceDue(now, limit);
+    public List<UUID> findGraceDue(OffsetDateTime now, UUID afterId, int limit) {
+        return repository.findGraceDue(now, afterId, limit);
     }
 
     @Override
@@ -129,7 +129,7 @@ public class SubscriptionRepositoryAdapter implements SubscriptionRepositoryPort
     static Subscription toDomain(SubscriptionEntity e) {
         return new Subscription(e.getId(), e.getTenantId(), e.getPlanId(), e.getStatus(), e.getSuspensionReason(),
                 e.getPastDueReason(), e.getTrialEndsAt(), e.getCurrentPeriodStart(), e.getCurrentPeriodEnd(),
-                e.getGraceEndsAt(), e.isCancelAtPeriodEnd(), e.getCanceledAt(), e.getSuspendedAt(),
+                e.getBillingAnchorDay() == null ? null : e.getBillingAnchorDay().intValue(), e.getGraceEndsAt(), e.isCancelAtPeriodEnd(), e.getCanceledAt(), e.getSuspendedAt(),
                 e.getPriceAmount(), e.getCurrency(), e.getGateway(), e.getGatewaySubscriptionId(),
                 e.getGatewayStatus(), e.getGatewayLastModified(), e.getNextChargeAt(), e.getBillingEmail(),
                 e.getCompanyName(), e.getVersion(), e.getCreatedAt());
@@ -143,6 +143,7 @@ public class SubscriptionRepositoryAdapter implements SubscriptionRepositoryPort
         e.setTrialEndsAt(s.getTrialEndsAt());
         e.setCurrentPeriodStart(s.getCurrentPeriodStart());
         e.setCurrentPeriodEnd(s.getCurrentPeriodEnd());
+        e.setBillingAnchorDay(s.getBillingAnchorDay() == null ? null : s.getBillingAnchorDay().shortValue());
         e.setGraceEndsAt(s.getGraceEndsAt());
         e.setCancelAtPeriodEnd(s.isCancelAtPeriodEnd());
         e.setCanceledAt(s.getCanceledAt());

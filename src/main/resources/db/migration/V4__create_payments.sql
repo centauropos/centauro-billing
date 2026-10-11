@@ -27,9 +27,10 @@ CREATE TABLE payments (
     CONSTRAINT ck_payments_amount CHECK (amount >= 0),
     CONSTRAINT ck_payments_currency CHECK (currency = 'ARS'),
     CONSTRAINT ck_payments_gateway_id CHECK (source = 'MANUAL' OR gateway_payment_id IS NOT NULL),
+    CONSTRAINT ck_payments_manual_reference CHECK (source <> 'MANUAL' OR reference IS NOT NULL),
     CONSTRAINT ck_payments_period CHECK (period_end IS NULL OR period_start IS NULL OR period_end > period_start)
 );
 
 CREATE UNIQUE INDEX uq_payments_gateway ON payments (source, gateway_payment_id) WHERE gateway_payment_id IS NOT NULL;
-CREATE UNIQUE INDEX uq_payments_manual_reference ON payments (tenant_id, reference) WHERE source = 'MANUAL' AND reference IS NOT NULL;
+CREATE UNIQUE INDEX uq_payments_manual_reference ON payments (tenant_id, reference) WHERE source = 'MANUAL';
 CREATE INDEX idx_payments_subscription ON payments (subscription_id, created_at DESC);

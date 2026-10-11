@@ -68,7 +68,7 @@ public class TrialUseCase {
                 .orElseThrow(() -> new PlanNotFoundException(planCode));
 
         OffsetDateTime now = OffsetDateTime.now(clock);
-        OffsetDateTime trialEndsAt = periodCalculator.endOfDayPlusDays(now, terms.trialDays());
+        OffsetDateTime trialEndsAt = periodCalculator.startOfDayAfter(now, terms.trialDays());
         Subscription subscription = Subscription.startTrial(tenantId, plan.getId(),
                 plan.currentPrice(now).map(PlanPrice::amount).orElse(null), trialEndsAt,
                 trim(command.companyName()), trim(command.billingEmail()), now);

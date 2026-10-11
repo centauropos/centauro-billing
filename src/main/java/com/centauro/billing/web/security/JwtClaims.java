@@ -7,15 +7,19 @@ import java.util.List;
 import java.util.Map;
 
 /** Claims que emite auth-service. {@code role} con fallback a {@code roleId.authority}, como pos-manager. */
-public record JwtClaims(String subject, String tenantId, String role, List<String> permissions) {
+public record JwtClaims(String subject, String userId, String tenantId, String role, List<String> permissions) {
 
     public JwtClaims {
         permissions = permissions == null ? List.of() : List.copyOf(permissions);
     }
 
+    public JwtClaims(String subject, String tenantId, String role, List<String> permissions) {
+        this(subject, null, tenantId, role, permissions);
+    }
+
     public static JwtClaims from(Claims claims) {
-        return new JwtClaims(claims.getSubject(), stringClaim(claims.get("tenantId")), resolveRole(claims),
-                resolvePermissions(claims.get("permissions")));
+        return new JwtClaims(claims.getSubject(), stringClaim(claims.get("id")), stringClaim(claims.get("tenantId")),
+                resolveRole(claims), resolvePermissions(claims.get("permissions")));
     }
 
     public boolean hasTenant() {

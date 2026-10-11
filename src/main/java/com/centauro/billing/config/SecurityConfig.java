@@ -1,5 +1,6 @@
 package com.centauro.billing.config;
 
+import com.centauro.billing.web.security.BillingAuthorization;
 import com.centauro.billing.web.security.InternalApiKeyFilter;
 import com.centauro.billing.web.security.JwtTokenFilter;
 import com.centauro.billing.web.security.SecurityErrorWriter;
@@ -21,7 +22,8 @@ import java.time.Clock;
 import java.time.ZoneId;
 
 /**
- * Cuatro cadenas: interna (API key), webhooks (público), API con JWT y el resto (health/docs o denegado).
+ * Cuatro cadenas: interna (API key), webhooks (cerrada hasta PR1b), API con JWT y el resto
+ * (health y, si está habilitado, springdoc; todo lo demás denegado).
  * Los filtros se instancian acá y no son {@code @Component}, para que Spring Boot no los registre también
  * como filtros globales del servlet.
  */
@@ -30,15 +32,20 @@ import java.time.ZoneId;
 @EnableMethodSecurity
 public class SecurityConfig {
 
+    private static final String[] DOCS = {"/swagger-ui.html", "/swagger-ui/**", "/api-docs", "/api-docs/**"};
+
     private final SecurityErrorWriter errorWriter;
     private final JwtTokenFilter jwtTokenFilter;
     private final InternalApiKeyFilter internalApiKeyFilter;
+    private final boolean docsEnabled;
 
     public SecurityConfig(ObjectMapper objectMapper, Clock clock, BillingProperties properties,
-                          @Value("${jwt.secret}") String jwtSecret) {
+                          @Value("${jwt.secret}") String jwtSecret,
+                          @Value("${springdoc.api-docs.enabled:true}") boolean docsEnabled) {
         this.errorWriter = new SecurityErrorWriter(objectMapper, clock, ZoneId.of(properties.zone()));
         this.jwtTokenFilter = new JwtTokenFilter(jwtSecret, errorWriter);
         this.internalApiKeyFilter = new InternalApiKeyFilter(properties.internal().apiKey(), errorWriter);
+        this.docsEnabled = docsEnabled;
     }
 
     @Bean
@@ -54,17 +61,24 @@ public class SecurityConfig {
     @Order(2)
     public SecurityFilterChain webhookChain(HttpSecurity http) throws Exception {
         stateless(http.securityMatcher("/webhooks/**"))
-                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+                .authorizeHttpRequests(auth -> auth.anyRequest().denyAll());
         return http.build();
     }
 
+    /**
+     * {@code /api/v1/platform/**} exige la authority {@code PLATFORM_ADMIN} acá y además el {@code @PreAuthorize}
+     * de los controllers. Esa authority solo sale de {@code permissions}: el rol se mapea como {@code ROLE_<rol>}.
+     */
     @Bean
     @Order(3)
     public SecurityFilterChain apiChain(HttpSecurity http) throws Exception {
         stateless(http.securityMatcher("/api/**"))
                 .cors(Customizer.withDefaults())
                 .addFilterBefore(jwtTokenFilter, UsernamePasswordAuthenticationFilter.class)
-                .authorizeHttpRequests(auth -> auth.anyRequest().authenticated());
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/v1/platform/**").hasAuthority(BillingAuthorization.PLATFORM_ADMIN)
+                        .requestMatchers("/api/v1/billing/**").authenticated()
+                        .anyRequest().denyAll());
         return http.build();
     }
 
@@ -72,10 +86,13 @@ public class SecurityConfig {
     @Order(4)
     public SecurityFilterChain defaultChain(HttpSecurity http) throws Exception {
         stateless(http)
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/health", "/actuator/health/**", "/swagger-ui.html",
-                                "/swagger-ui/**", "/api-docs", "/api-docs/**", "/error").permitAll()
-                        .anyRequest().denyAll());
+                .authorizeHttpRequests(auth -> {
+                    auth.requestMatchers("/actuator/health", "/actuator/health/**", "/error").permitAll();
+                    if (docsEnabled) {
+                        auth.requestMatchers(DOCS).permitAll();
+                    }
+                    auth.anyRequest().denyAll();
+                });
         return http.build();
     }
 

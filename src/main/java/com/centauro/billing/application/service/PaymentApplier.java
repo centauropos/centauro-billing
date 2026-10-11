@@ -33,8 +33,12 @@ public class PaymentApplier {
     public record Result(Payment payment, Subscription subscription, boolean applied) {
     }
 
-    /** La suscripción tiene que venir bloqueada por el llamador. */
-    public Result apply(Subscription subscription, Payment payment, GatewayName gateway, Actor actor,
+    /**
+     * La suscripción tiene que venir bloqueada por el llamador. Con suspensión administrativa el pago queda
+     * registrado sin aplicar: es el caso de un cobro de la pasarela, que no se puede rechazar (PR1b).
+     * El pago manual corta antes con {@code SUBSCRIPTION_ADMIN_SUSPENDED}.
+     */
+    public Result apply(Subscription subscription, Payment payment, int anchorDay, GatewayName gateway, Actor actor,
                         String reason, OffsetDateTime now) {
         if (payment.status() != PaymentStatus.APPROVED || payment.applied()) {
             return new Result(payment, subscription, false);
@@ -43,11 +47,11 @@ public class PaymentApplier {
             events.append(subscription.recordPaymentWithoutReactivation(payment.id(), actor, reason, now));
             return new Result(payment, subscription, false);
         }
-        if (!payments.markApplied(payment.id())) {
+        if (!payments.markApplied(payment.id(), now)) {
             return new Result(payment, subscription, false);
         }
-        var event = subscription.applyPayment(payment.id(), payment.periodStart(), payment.periodEnd(), gateway,
-                actor, reason, now);
+        var event = subscription.applyPayment(payment.id(), payment.periodStart(), payment.periodEnd(), anchorDay,
+                gateway, actor, reason, now);
         Subscription saved = subscriptions.save(subscription);
         events.append(event);
         return new Result(payment.markApplied(), saved, true);

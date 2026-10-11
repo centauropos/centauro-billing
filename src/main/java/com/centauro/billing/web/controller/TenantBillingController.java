@@ -5,7 +5,6 @@ import com.centauro.billing.application.dto.ChangePlanRequest;
 import com.centauro.billing.application.dto.PublicPlanView;
 import com.centauro.billing.application.dto.TenantSubscriptionView;
 import com.centauro.billing.application.usecase.TenantSubscriptionUseCase;
-import com.centauro.billing.domain.vo.Actor;
 import com.centauro.billing.web.openapi.OpenApiConfig;
 import com.centauro.billing.web.security.TenantContextHolder;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -49,14 +48,13 @@ public class TenantBillingController {
     @PreAuthorize("@billingAuth.canManage()")
     public TenantSubscriptionView cancel(@Valid @RequestBody(required = false) CancelRequest request) {
         String reason = request == null ? null : request.reason();
-        return useCase.cancel(TenantContextHolder.requireTenantId(), reason,
-                Actor.tenantUser(TenantContextHolder.currentSubject()));
+        return useCase.cancel(TenantContextHolder.requireTenantId(), reason, TenantContextHolder.tenantUserActor());
     }
 
     @PostMapping("/subscription/change-plan")
     @PreAuthorize("@billingAuth.canManage()")
     public TenantSubscriptionView changePlan(@Valid @RequestBody ChangePlanRequest request) {
         return useCase.changePlan(TenantContextHolder.requireTenantId(), request.planCode(),
-                Actor.tenantUser(TenantContextHolder.currentSubject()));
+                TenantContextHolder.tenantUserActor());
     }
 }

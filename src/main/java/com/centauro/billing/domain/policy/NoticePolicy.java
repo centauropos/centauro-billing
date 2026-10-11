@@ -53,13 +53,16 @@ public final class NoticePolicy {
         return null;
     }
 
-    /** Días calendario AR entre hoy y la fecha objetivo; nunca negativo. */
+    /**
+     * Días calendario AR entre hoy y el último día con acceso; nunca negativo. Los vencimientos son
+     * exclusivos, así que el último día con acceso es el del instante inmediatamente anterior.
+     */
     public Integer daysUntil(OffsetDateTime target, OffsetDateTime now) {
         if (target == null) {
             return null;
         }
         long days = ChronoUnit.DAYS.between(now.atZoneSameInstant(zone).toLocalDate(),
-                target.atZoneSameInstant(zone).toLocalDate());
+                target.minusNanos(1).atZoneSameInstant(zone).toLocalDate());
         return (int) Math.max(0, days);
     }
 }

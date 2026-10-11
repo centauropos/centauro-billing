@@ -15,7 +15,9 @@ import com.centauro.billing.domain.exception.PlanPriceNotFoundException;
 import com.centauro.billing.domain.exception.PlanWithoutPriceException;
 import com.centauro.billing.domain.exception.PriceAlreadyEffectiveException;
 import com.centauro.billing.domain.exception.SamePlanException;
+import com.centauro.billing.domain.exception.SubscriptionAdminSuspendedException;
 import com.centauro.billing.domain.exception.SubscriptionNotFoundException;
+import com.centauro.billing.domain.policy.BillingTerms;
 import com.centauro.billing.web.filter.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
@@ -39,7 +41,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.Clock;
-import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -59,6 +61,7 @@ public class GlobalExceptionHandler {
             Map.entry(DuplicatePaymentException.class, HttpStatus.CONFLICT),
             Map.entry(SamePlanException.class, HttpStatus.CONFLICT),
             Map.entry(PriceAlreadyEffectiveException.class, HttpStatus.CONFLICT),
+            Map.entry(SubscriptionAdminSuspendedException.class, HttpStatus.CONFLICT),
             Map.entry(PlanWithoutPriceException.class, HttpStatus.UNPROCESSABLE_ENTITY),
             Map.entry(GatewayRejectedException.class, HttpStatus.UNPROCESSABLE_ENTITY),
             Map.entry(InvalidBillingRequestException.class, HttpStatus.BAD_REQUEST),
@@ -66,9 +69,11 @@ public class GlobalExceptionHandler {
             Map.entry(GatewayTimeoutException.class, HttpStatus.GATEWAY_TIMEOUT));
 
     private final Clock clock;
+    private final ZoneId zone;
 
-    public GlobalExceptionHandler(Clock clock) {
+    public GlobalExceptionHandler(Clock clock, BillingTerms terms) {
         this.clock = clock;
+        this.zone = terms.zone();
     }
 
     @ExceptionHandler(BillingException.class)
@@ -141,7 +146,7 @@ public class GlobalExceptionHandler {
 
     private ResponseEntity<ErrorResponse> build(HttpStatus status, String code, String message,
                                                 HttpServletRequest request) {
-        return ResponseEntity.status(status).body(new ErrorResponse(OffsetDateTime.now(clock), status.value(),
+        return ResponseEntity.status(status).body(ErrorResponse.of(clock, zone, status.value(),
                 status.getReasonPhrase(), code, message, request.getRequestURI(),
                 MDC.get(CorrelationIdFilter.MDC_KEY)));
     }

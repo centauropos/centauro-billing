@@ -12,7 +12,6 @@ import org.springframework.http.MediaType;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
-import java.time.OffsetDateTime;
 import java.time.ZoneId;
 
 /** Escribe los 401/403 de las cadenas de seguridad con el mismo formato que {@code GlobalExceptionHandler}. */
@@ -33,9 +32,8 @@ public class SecurityErrorWriter {
         if (response.isCommitted()) {
             return;
         }
-        ErrorResponse body = new ErrorResponse(OffsetDateTime.now(clock).atZoneSameInstant(zone).toOffsetDateTime(),
-                status.value(), status.getReasonPhrase(), code, message, request.getRequestURI(),
-                MDC.get(CorrelationIdFilter.MDC_KEY));
+        ErrorResponse body = ErrorResponse.of(clock, zone, status.value(), status.getReasonPhrase(), code, message,
+                request.getRequestURI(), MDC.get(CorrelationIdFilter.MDC_KEY));
         response.setStatus(status.value());
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
