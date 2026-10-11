@@ -368,17 +368,17 @@ class SubscriptionTransitionsTest {
             Subscription s = inState(status);
             UUID newPlan = UUID.randomUUID();
 
-            SubscriptionEvent event = s.changePlan(newPlan, "BASICO", new BigDecimal("10000"), ADMIN, "x", NOW);
+            SubscriptionEvent event = s.changePlan(newPlan, "INICIAL", new BigDecimal("10000"), ADMIN, "x", NOW);
 
             assertThat(s.getPlanId()).isEqualTo(newPlan);
             assertThat(s.getPriceAmount()).isEqualByComparingTo("10000.00");
             assertThat(s.getStatus()).isEqualTo(status);
-            assertThat(event.data()).containsEntry("toPlanCode", "BASICO").containsEntry("fromPrice", "25000.00");
+            assertThat(event.data()).containsEntry("toPlanCode", "INICIAL").containsEntry("fromPrice", "25000.00");
         }
 
         @Test
         void t13_changePlanOnCanceledIsInvalid() {
-            assertThatThrownBy(() -> inState(CANCELED).changePlan(UUID.randomUUID(), "BASICO", BigDecimal.TEN,
+            assertThatThrownBy(() -> inState(CANCELED).changePlan(UUID.randomUUID(), "INICIAL", BigDecimal.TEN,
                     ADMIN, "x", NOW)).isInstanceOf(InvalidSubscriptionTransitionException.class);
         }
 
@@ -386,7 +386,7 @@ class SubscriptionTransitionsTest {
         void t13_changeToSamePlanIsRejected() {
             Subscription s = inState(ACTIVE);
 
-            assertThatThrownBy(() -> s.changePlan(s.getPlanId(), "PRO", BigDecimal.TEN, ADMIN, "x", NOW))
+            assertThatThrownBy(() -> s.changePlan(s.getPlanId(), "PROFESIONAL", BigDecimal.TEN, ADMIN, "x", NOW))
                     .isInstanceOf(SamePlanException.class);
         }
     }

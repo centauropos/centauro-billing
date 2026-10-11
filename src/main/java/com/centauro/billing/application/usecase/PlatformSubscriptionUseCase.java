@@ -34,6 +34,7 @@ import com.centauro.billing.domain.vo.TenantIds;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -140,17 +141,18 @@ public class PlatformSubscriptionUseCase {
         Plan plan = plans.findByCode(request.planCode())
                 .filter(Plan::isActive)
                 .orElseThrow(() -> new PlanNotFoundException(request.planCode()));
-        PlanPrice price = plan.currentPrice(now)
-                .orElseThrow(() -> new PlanWithoutPriceException(request.planCode()));
+        BigDecimal amount = plan.resolveCustomAmount(request.customAmount())
+                .orElseGet(() -> plan.currentPrice(now).map(PlanPrice::amount)
+                        .orElseThrow(() -> new PlanWithoutPriceException(request.planCode())));
         boolean syncGateway = !Boolean.FALSE.equals(request.syncGateway());
         if (syncGateway) {
             gatewayOperations.requireAvailable(subscription);
         }
-        SubscriptionEvent event = subscription.changePlan(plan.getId(), plan.getCode(), price.amount(), actor,
+        SubscriptionEvent event = subscription.changePlan(plan.getId(), plan.getCode(), amount, actor,
                 request.reason(), now);
         TenantSubscriptionView view = persist(subscription, event, now);
         if (syncGateway) {
-            gatewayOperations.updateAmountAfterCommit(subscription, price.amount());
+            gatewayOperations.updateAmountAfterCommit(subscription, amount);
         }
         return view;
     }

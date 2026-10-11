@@ -9,6 +9,7 @@ import com.centauro.billing.application.service.SubscriptionViewAssembler;
 import com.centauro.billing.domain.exception.DuplicatePlanException;
 import com.centauro.billing.domain.exception.DuplicatePlanPriceException;
 import com.centauro.billing.domain.exception.InvalidBillingRequestException;
+import com.centauro.billing.domain.exception.PlanCustomPricingException;
 import com.centauro.billing.domain.exception.PlanNotFoundException;
 import com.centauro.billing.domain.exception.PlanPriceNotFoundException;
 import com.centauro.billing.domain.exception.PriceAlreadyEffectiveException;
@@ -61,7 +62,7 @@ public class PlanAdminUseCase {
         }
         Plan plan = Plan.create(request.code(), request.name().trim(), request.description(),
                 request.active() == null || request.active(), Boolean.TRUE.equals(request.publicVisible()),
-                request.sortOrder() == null ? 0 : request.sortOrder(), request.features(), request.limits());
+                Boolean.TRUE.equals(request.customPricing()), request.sortOrder() == null ? 0 : request.sortOrder(), request.features(), request.limits());
         Plan saved = plans.save(plan);
         log.info("Plan creado code={} por={}", saved.getCode(), actor.logId());
         return assembler.planAdminView(saved, OffsetDateTime.now(clock));
@@ -70,10 +71,14 @@ public class PlanAdminUseCase {
     @Transactional
     public PlanAdminView updatePlan(String code, PlanUpdateRequest request, Actor actor) {
         Plan plan = requirePlan(code);
+        boolean customPricing = request.customPricing() == null ? plan.isCustomPricing() : request.customPricing();
+        if (customPricing && !plan.isCustomPricing() && !plan.getPrices().isEmpty()) {
+            throw new PlanCustomPricingException(code);
+        }
         plan.update(request.name().trim(), request.description(),
                 request.active() == null ? plan.isActive() : request.active(),
                 request.publicVisible() == null ? plan.isPublicVisible() : request.publicVisible(),
-                request.sortOrder() == null ? plan.getSortOrder() : request.sortOrder(),
+                customPricing, request.sortOrder() == null ? plan.getSortOrder() : request.sortOrder(),
                 request.features() == null ? plan.getFeatures() : request.features(),
                 request.limits() == null ? plan.getLimits() : request.limits());
         plans.save(plan);
@@ -96,6 +101,9 @@ public class PlanAdminUseCase {
             throw new InvalidBillingRequestException("validFrom tiene que ser posterior al momento actual");
         }
         Plan plan = requirePlan(code);
+        if (plan.isCustomPricing()) {
+            throw new PlanCustomPricingException(code);
+        }
         if (plans.existsPrice(plan.getId(), request.validFrom())) {
             throw new DuplicatePlanPriceException(code);
         }

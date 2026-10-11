@@ -58,7 +58,7 @@ class PaymentApplierTest {
         payments = new InMemoryPaymentRepository();
         events = new InMemoryEventRepository();
         InMemoryPlanRepository plans = new InMemoryPlanRepository();
-        pro = plans.put(plan("PRO", false, new BigDecimal("25000")));
+        pro = plans.put(plan("PROFESIONAL", false, new BigDecimal("25000")));
         applier = new PaymentApplier(subscriptions, payments, events);
         SubscriptionViewAssembler assembler = new SubscriptionViewAssembler(new AccessPolicy(TERMS),
                 new NoticePolicy(AR), new AllowedActionsPolicy(), TERMS);

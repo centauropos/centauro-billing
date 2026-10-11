@@ -61,7 +61,8 @@ public class SubscriptionViewAssembler {
                 subscription.getTenantId(),
                 decision.effectiveStatus().name(),
                 decision.accessLevel().name(),
-                plan == null ? null : new PlanSummaryView(plan.getCode(), plan.getName()),
+                plan == null ? null : new PlanSummaryView(plan.getCode(), plan.getName(), plan.isCustomPricing(),
+                        plan.getFeatures(), plan.getLimits()),
                 price,
                 local(subscription.getTrialEndsAt()),
                 trialDaysLeft,
@@ -134,7 +135,7 @@ public class SubscriptionViewAssembler {
 
     public PlanAdminView planAdminView(Plan plan, OffsetDateTime now) {
         return new PlanAdminView(plan.getId(), plan.getCode(), plan.getName(), plan.getDescription(),
-                plan.isActive(), plan.isPublicVisible(), plan.getSortOrder(), plan.getFeatures(), plan.getLimits(),
+                plan.isActive(), plan.isPublicVisible(), plan.isCustomPricing(), plan.getSortOrder(), plan.getFeatures(), plan.getLimits(),
                 plan.currentPrice(now).map(this::priceView).orElse(null),
                 plan.upcomingPrices(now).stream().map(this::priceView).toList());
     }

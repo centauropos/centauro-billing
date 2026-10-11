@@ -7,6 +7,7 @@ import com.centauro.billing.application.service.GatewayOperations;
 import com.centauro.billing.application.service.SubscriptionViewAssembler;
 import com.centauro.billing.domain.exception.InvalidSubscriptionTransitionException;
 import com.centauro.billing.domain.exception.PlanNotFoundException;
+import com.centauro.billing.domain.exception.PlanRequiresContactException;
 import com.centauro.billing.domain.exception.PlanWithoutPriceException;
 import com.centauro.billing.domain.exception.SubscriptionNotFoundException;
 import com.centauro.billing.domain.model.Plan;
@@ -25,6 +26,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /** Operaciones del tenant sobre su propia suscripción. El tenantId siempre viene del JWT. */
 @Service
@@ -61,11 +63,16 @@ public class TenantSubscriptionUseCase {
         UUID currentPlanId = subscriptions.findByTenantId(tenantId).map(Subscription::getPlanId).orElse(null);
         return plans.findAll().stream()
                 .filter(Plan::isOfferable)
-                .flatMap(plan -> plan.currentPrice(now).stream().map(price -> new PublicPlanView(
-                        plan.getCode(), plan.getName(), plan.getDescription(), plan.getFeatures(), plan.getLimits(),
-                        PriceView.monthly(price.amount(), price.currency()),
-                        plan.getId().equals(currentPlanId))))
+                .flatMap(plan -> plan.isCustomPricing()
+                        ? Stream.of(publicView(plan, null, currentPlanId))
+                        : plan.currentPrice(now).stream().map(price -> publicView(plan,
+                                PriceView.monthly(price.amount(), price.currency()), currentPlanId)))
                 .toList();
+    }
+
+    private static PublicPlanView publicView(Plan plan, PriceView price, UUID currentPlanId) {
+        return new PublicPlanView(plan.getCode(), plan.getName(), plan.getDescription(), plan.getFeatures(),
+                plan.getLimits(), price, plan.isCustomPricing(), plan.getId().equals(currentPlanId));
     }
 
     @Transactional
@@ -91,6 +98,9 @@ public class TenantSubscriptionUseCase {
         Plan plan = plans.findByCode(planCode)
                 .filter(Plan::isOfferable)
                 .orElseThrow(() -> new PlanNotFoundException(planCode));
+        if (plan.isCustomPricing()) {
+            throw new PlanRequiresContactException(planCode);
+        }
         PlanPrice price = plan.currentPrice(now).orElseThrow(() -> new PlanWithoutPriceException(planCode));
         gatewayOperations.requireAvailable(subscription);
         SubscriptionEvent event = subscription.changePlan(plan.getId(), plan.getCode(), price.amount(), actor,

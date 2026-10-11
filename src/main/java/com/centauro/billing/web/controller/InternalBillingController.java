@@ -40,8 +40,8 @@ public class InternalBillingController {
     public ResponseEntity<TrialResult> createTrial(@PathVariable String tenantId,
                                                    @Valid @RequestBody TrialRequest request) {
         String source = request.source() == null || request.source().isBlank() ? DEFAULT_SOURCE : request.source();
-        TrialResult result = trialUseCase.createTrial(new TrialUseCase.Command(tenantId, request.companyName(),
-                request.billingEmail(), request.planCode(), source, Actor.internal(source), null));
+        TrialResult result = trialUseCase.createTrial(TrialUseCase.Command.internal(tenantId, request.companyName(),
+                request.billingEmail(), request.planCode(), source, Actor.internal(source)));
         return ResponseEntity.status(result.created() ? HttpStatus.CREATED : HttpStatus.OK).body(result);
     }
 

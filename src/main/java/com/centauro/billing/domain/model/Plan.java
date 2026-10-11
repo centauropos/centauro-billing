@@ -1,5 +1,9 @@
 package com.centauro.billing.domain.model;
 
+import com.centauro.billing.domain.exception.InvalidBillingRequestException;
+import com.centauro.billing.domain.vo.Amounts;
+
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -22,6 +26,8 @@ public class Plan {
     private String description;
     private boolean active;
     private boolean publicVisible;
+    /** Precio a medida: el plan no tiene precios versionados y el monto se fija por suscripción. */
+    private boolean customPricing;
     private int sortOrder;
     private Set<String> features;
     /** Un valor {@code null} significa ilimitado. */
@@ -29,13 +35,15 @@ public class Plan {
     private final List<PlanPrice> prices;
 
     public Plan(UUID id, String code, String name, String description, boolean active, boolean publicVisible,
-                int sortOrder, Set<String> features, Map<String, Integer> limits, List<PlanPrice> prices) {
+                boolean customPricing, int sortOrder, Set<String> features, Map<String, Integer> limits,
+                List<PlanPrice> prices) {
         this.id = id;
         this.code = code;
         this.name = name;
         this.description = description;
         this.active = active;
         this.publicVisible = publicVisible;
+        this.customPricing = customPricing;
         this.sortOrder = sortOrder;
         this.features = features == null ? new LinkedHashSet<>() : new LinkedHashSet<>(features);
         this.limits = limits == null ? new LinkedHashMap<>() : new LinkedHashMap<>(limits);
@@ -43,17 +51,19 @@ public class Plan {
     }
 
     public static Plan create(String code, String name, String description, boolean active, boolean publicVisible,
-                              int sortOrder, Set<String> features, Map<String, Integer> limits) {
-        return new Plan(UUID.randomUUID(), code, name, description, active, publicVisible, sortOrder,
+                              boolean customPricing, int sortOrder, Set<String> features,
+                              Map<String, Integer> limits) {
+        return new Plan(UUID.randomUUID(), code, name, description, active, publicVisible, customPricing, sortOrder,
                 features, limits, List.of());
     }
 
-    public void update(String name, String description, boolean active, boolean publicVisible, int sortOrder,
-                       Set<String> features, Map<String, Integer> limits) {
+    public void update(String name, String description, boolean active, boolean publicVisible,
+                       boolean customPricing, int sortOrder, Set<String> features, Map<String, Integer> limits) {
         this.name = name;
         this.description = description;
         this.active = active;
         this.publicVisible = publicVisible;
+        this.customPricing = customPricing;
         this.sortOrder = sortOrder;
         this.features = features == null ? new LinkedHashSet<>() : new LinkedHashSet<>(features);
         this.limits = limits == null ? new LinkedHashMap<>() : new LinkedHashMap<>(limits);
@@ -71,6 +81,25 @@ public class Plan {
                 .filter(p -> p.validFrom().isAfter(now))
                 .sorted(Comparator.comparing(PlanPrice::validFrom))
                 .toList();
+    }
+
+    /**
+     * Monto a medida para una suscripción a este plan: obligatorio si el plan es a medida y prohibido si no.
+     * Devuelve vacío para planes con precio de lista.
+     */
+    public Optional<BigDecimal> resolveCustomAmount(BigDecimal customAmount) {
+        if (!customPricing) {
+            if (customAmount != null) {
+                throw new InvalidBillingRequestException(
+                        "customAmount solo se admite para planes con precio a medida");
+            }
+            return Optional.empty();
+        }
+        if (customAmount == null) {
+            throw new InvalidBillingRequestException(
+                    "El plan " + code + " tiene precio a medida: indicar customAmount");
+        }
+        return Optional.of(Amounts.requirePositiveMoney(customAmount));
     }
 
     public boolean isOfferable() {
@@ -99,6 +128,10 @@ public class Plan {
 
     public boolean isPublicVisible() {
         return publicVisible;
+    }
+
+    public boolean isCustomPricing() {
+        return customPricing;
     }
 
     public int getSortOrder() {

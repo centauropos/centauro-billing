@@ -202,7 +202,7 @@ fin.
 |---|---|
 | `SubscriptionNotFoundException`, `PlanNotFoundException`, `PlanPriceNotFoundException` | 404 |
 | `InvalidSubscriptionTransitionException`, `SamePlanException`, `CheckoutNotAllowedException`, `Duplicate*Exception`, `PriceAlreadyEffectiveException`, `SubscriptionAdminSuspendedException` | 409 |
-| `PlanWithoutPriceException`, `GatewayRejectedException` | 422 |
+| `PlanWithoutPriceException`, `PlanCustomPricingException` (`PLAN_CUSTOM_PRICING`), `PlanRequiresContactException` (`PLAN_REQUIRES_CONTACT`), `GatewayRejectedException` | 422 |
 | validación, `InvalidBillingRequestException` | 400 |
 | `GatewayUnavailableException` | 502 |
 | `GatewayTimeoutException` | 504 |
@@ -241,13 +241,68 @@ la primera vez es 201. Misma referencia con otro importe: 409
 `DUPLICATE_PAYMENT`. Con suspensión administrativa: 409
 `SUBSCRIPTION_ADMIN_SUSPENDED` sin persistir nada (hay que reactivar primero).
 
+## Planes
+
+V7 carga los planes comerciales (ARS, mensuales, activos y `public_visible`):
+
+| code | Precio | features | `maxArcaInvoicesPerMonth` |
+|---|---|---|---|
+| `INICIAL` | 14900.00 | `SALES_CASH`, `STOCK_BASIC` | 100 |
+| `NEGOCIO` | 29900.00 | `SALES_CASH`, `STOCK_ADVANCED`, `METRICS_SALES` | 500 |
+| `PROFESIONAL` | 59900.00 | lo de `NEGOCIO` + `ACCOUNTS_RECEIVABLE`, `PURCHASES`, `PRODUCTION`, `METRICS_FULL` | 2000 |
+| `EMPRESA` | a medida | lo de `PROFESIONAL` + `METRICS_FINANCIAL` | sin clave |
+
+Códigos de módulo (`features`), estables: son contrato con los consumidores de
+`/access` y del front. No renombrarlos; uno nuevo se agrega, uno viejo se deja
+de asignar.
+
+| Código | Módulo |
+|---|---|
+| `SALES_CASH` | ventas y caja |
+| `STOCK_BASIC` | stock básico |
+| `STOCK_ADVANCED` | stock avanzado |
+| `METRICS_SALES` | métricas de ventas |
+| `ACCOUNTS_RECEIVABLE` | cuenta corriente de clientes |
+| `PURCHASES` | compras |
+| `PRODUCTION` | producción |
+| `METRICS_FULL` | métricas completas |
+| `METRICS_FINANCIAL` | métricas financieras |
+
+`limits`: hoy solo `maxArcaInvoicesPerMonth` (comprobantes ARCA por mes). Una
+clave ausente significa que el plan no la limita (EMPRESA la negocia aparte).
+
+Módulos y límites **solo se guardan y se exponen**: en
+`GET /internal/v1/tenants/{id}/access` (`features` y `limits` del plan de la
+suscripción), en la vista del tenant (`plan.features`, `plan.limits`) y en los
+listados de planes. Para un tenant desconocido, `/access` devuelve
+`known: false`, `planCode: null`, `features: []` y `limits: {}`. Nada se
+bloquea por plan todavía: el enforcement es un PR propio.
+
+Centauro AI queda fuera del MVP: es un adicional futuro y no tiene código,
+feature ni límite.
+
+Precio a medida (`plans.custom_pricing`):
+
+- Un plan a medida no tiene `plan_prices`: `addPrice` da 422
+  `PLAN_CUSTOM_PRICING`, y un plan con precios no puede pasar a a medida.
+- `GET /api/v1/billing/plans` lo lista con `price: null` y
+  `customPricing: true` (el front muestra "Consultar"). Los demás planes se
+  listan solo si tienen precio vigente.
+- El tenant no puede pasarse solo: change-plan da 422 `PLAN_REQUIRES_CONTACT`.
+  El trial interno (`POST /internal/.../trial`) con un plan a medida, también.
+- Change-plan y trial de plataforma exigen `customAmount` (> 0, 2 decimales),
+  que queda en `subscriptions.price_amount` (el mismo snapshot que el precio de
+  lista). Mandar `customAmount` para un plan de lista da 400.
+- Para cambiar el monto de una suscripción que ya está en EMPRESA no hay
+  endpoint todavía (change-plan al mismo plan da `SAME_PLAN`).
+
 ## Configuración
 
 Obligatorias: `DB_URL`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET` (mínimo 32
 bytes), `BILLING_INTERNAL_API_KEY`.
 
 Opcionales: `URL_FRONT`, `BILLING_PUBLIC_BASE_URL`, `BILLING_CHECKOUT_BACK_URL`,
-`BILLING_TRIAL_DAYS` (14), `BILLING_TRIAL_PLAN_CODE` (PRO),
+`BILLING_TRIAL_DAYS` (14), `BILLING_TRIAL_PLAN_CODE` (PROFESIONAL),
 `BILLING_TRIAL_GRACE_DAYS` (3), `BILLING_GRACE_DAYS` (7),
 `BILLING_CHECKOUT_EXPIRATION_HOURS` (48), `BILLING_JOBS_ENABLED` (true),
 `SPRINGDOC_ENABLED` (true), `PORT`.
@@ -261,8 +316,8 @@ PR1b agrega `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET` y
 
 `JWT_SECRET` tiene que ser idéntico al de auth-service.
 
-Los planes del seed nacen con `public_visible = false` y precios placeholder.
-Publicarlos desde el backoffice solo después de cargar el precio real.
+El plan por defecto del trial (`PROFESIONAL`) tiene que existir, estar activo
+y no ser a medida.
 
 ## Cambios
 

@@ -73,6 +73,7 @@ public class PlanRepositoryAdapter implements PlanRepositoryPort {
         entity.setDescription(plan.getDescription());
         entity.setActive(plan.isActive());
         entity.setPublicVisible(plan.isPublicVisible());
+        entity.setCustomPricing(plan.isCustomPricing());
         entity.setSortOrder(plan.getSortOrder());
         entity.setFeatures(new ArrayList<>(plan.getFeatures()));
         entity.setLimits(new LinkedHashMap<>(plan.getLimits()));
@@ -114,7 +115,7 @@ public class PlanRepositoryAdapter implements PlanRepositoryPort {
 
     private static Plan toDomain(PlanEntity e, List<PlanPrice> prices) {
         return new Plan(e.getId(), e.getCode(), e.getName(), e.getDescription(), e.isActive(), e.isPublicVisible(),
-                e.getSortOrder(), e.getFeatures() == null ? null : new LinkedHashSet<>(e.getFeatures()),
+                e.isCustomPricing(), e.getSortOrder(), e.getFeatures() == null ? null : new LinkedHashSet<>(e.getFeatures()),
                 e.getLimits(), prices);
     }
 

@@ -3,6 +3,7 @@ package com.centauro.billing.application.usecase;
 import com.centauro.billing.application.dto.TrialResult;
 import com.centauro.billing.application.service.SubscriptionViewAssembler;
 import com.centauro.billing.domain.exception.PlanNotFoundException;
+import com.centauro.billing.domain.exception.PlanRequiresContactException;
 import com.centauro.billing.domain.exception.SubscriptionNotFoundException;
 import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.PlanPrice;
@@ -19,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.util.Optional;
@@ -49,8 +51,18 @@ public class TrialUseCase {
         this.clock = clock;
     }
 
+    /**
+     * {@code customPricingAllowed} solo lo habilita la plataforma: el alta interna no puede elegir un plan a
+     * medida. {@code customAmount} es obligatorio para esos planes y prohibido para el resto.
+     */
     public record Command(String tenantId, String companyName, String billingEmail, String planCode,
-                          String source, Actor actor, String reason) {
+                          String source, Actor actor, String reason, BigDecimal customAmount,
+                          boolean customPricingAllowed) {
+
+        public static Command internal(String tenantId, String companyName, String billingEmail, String planCode,
+                                       String source, Actor actor) {
+            return new Command(tenantId, companyName, billingEmail, planCode, source, actor, null, null, false);
+        }
     }
 
     @Transactional
@@ -66,11 +78,15 @@ public class TrialUseCase {
         Plan plan = plans.findByCode(planCode)
                 .filter(Plan::isActive)
                 .orElseThrow(() -> new PlanNotFoundException(planCode));
+        if (plan.isCustomPricing() && !command.customPricingAllowed()) {
+            throw new PlanRequiresContactException(planCode);
+        }
 
         OffsetDateTime now = OffsetDateTime.now(clock);
+        BigDecimal priceAmount = plan.resolveCustomAmount(command.customAmount())
+                .orElseGet(() -> plan.currentPrice(now).map(PlanPrice::amount).orElse(null));
         OffsetDateTime trialEndsAt = periodCalculator.startOfDayAfter(now, terms.trialDays());
-        Subscription subscription = Subscription.startTrial(tenantId, plan.getId(),
-                plan.currentPrice(now).map(PlanPrice::amount).orElse(null), trialEndsAt,
+        Subscription subscription = Subscription.startTrial(tenantId, plan.getId(), priceAmount, trialEndsAt,
                 trim(command.companyName()), trim(command.billingEmail()), now);
 
         if (subscriptions.insertIfAbsent(subscription)) {
