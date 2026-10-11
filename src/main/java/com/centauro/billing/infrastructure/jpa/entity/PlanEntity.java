@@ -44,6 +44,9 @@ public class PlanEntity {
     @Column(name = "public_visible", nullable = false)
     private boolean publicVisible;
 
+    @Column(name = "custom_pricing", nullable = false)
+    private boolean customPricing;
+
     @Column(name = "sort_order", nullable = false)
     private int sortOrder;
 

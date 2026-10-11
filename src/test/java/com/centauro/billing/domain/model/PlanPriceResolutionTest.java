@@ -51,6 +51,6 @@ class PlanPriceResolutionTest {
     }
 
     private Plan planWith(PlanPrice... prices) {
-        return new Plan(planId, "PRO", "Pro", null, true, true, 0, Set.of(), Map.of(), List.of(prices));
+        return new Plan(planId, "PROFESIONAL", "Profesional", null, true, true, false, 0, Set.of(), Map.of(), List.of(prices));
     }
 }

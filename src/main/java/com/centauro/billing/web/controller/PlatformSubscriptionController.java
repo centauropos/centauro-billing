@@ -83,7 +83,8 @@ public class PlatformSubscriptionController {
     public ResponseEntity<TrialResult> createTrial(@PathVariable String tenantId,
                                                    @Valid @RequestBody PlatformTrialRequest request) {
         TrialResult result = trialUseCase.createTrial(new TrialUseCase.Command(tenantId, request.companyName(),
-                request.billingEmail(), request.planCode(), "PLATFORM", actor(), request.reason()));
+                request.billingEmail(), request.planCode(), "PLATFORM", actor(), request.reason(),
+                request.customAmount(), true));
         return ResponseEntity.status(result.created() ? HttpStatus.CREATED : HttpStatus.OK).body(result);
     }
 

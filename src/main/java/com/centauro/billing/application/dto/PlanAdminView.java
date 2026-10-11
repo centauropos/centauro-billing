@@ -12,6 +12,7 @@ public record PlanAdminView(
         String description,
         boolean active,
         boolean publicVisible,
+        boolean customPricing,
         int sortOrder,
         Set<String> features,
         Map<String, Integer> limits,

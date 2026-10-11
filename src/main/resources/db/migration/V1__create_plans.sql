@@ -8,6 +8,7 @@ CREATE TABLE plans (
     description     TEXT,
     active          BOOLEAN      NOT NULL DEFAULT TRUE,
     public_visible  BOOLEAN      NOT NULL DEFAULT FALSE,
+    custom_pricing  BOOLEAN      NOT NULL DEFAULT FALSE,
     sort_order      INTEGER      NOT NULL DEFAULT 0,
     features        JSONB        NOT NULL DEFAULT '[]'::jsonb,
     limits          JSONB        NOT NULL DEFAULT '{}'::jsonb,

@@ -13,6 +13,7 @@ public record PlanRequest(
         String description,
         Boolean active,
         Boolean publicVisible,
+        Boolean customPricing,
         Integer sortOrder,
         Set<String> features,
         Map<String, Integer> limits

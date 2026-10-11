@@ -18,7 +18,7 @@ public record BillingProperties(
     }
 
     public record Trial(@DefaultValue("14") int days,
-                        @DefaultValue("PRO") String planCode,
+                        @DefaultValue("PROFESIONAL") String planCode,
                         @DefaultValue("3") int graceDays) {
     }
 

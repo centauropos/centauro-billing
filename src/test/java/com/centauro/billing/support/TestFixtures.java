@@ -25,7 +25,7 @@ public final class TestFixtures {
     public static final ZoneOffset AR_OFFSET = ZoneOffset.ofHours(-3);
     /** 2026-10-11 10:00 -03:00. */
     public static final OffsetDateTime NOW = OffsetDateTime.of(2026, 10, 11, 10, 0, 0, 0, AR_OFFSET);
-    public static final BillingTerms TERMS = new BillingTerms(14, 3, 7, "PRO", AR);
+    public static final BillingTerms TERMS = new BillingTerms(14, 3, 7, "PROFESIONAL", AR);
 
     private TestFixtures() {
     }
@@ -39,8 +39,14 @@ public final class TestFixtures {
         List<PlanPrice> prices = amount == null ? List.of()
                 : List.of(new PlanPrice(UUID.randomUUID(), id, "ARS", null, amount,
                 OffsetDateTime.of(2026, 1, 1, 0, 0, 0, 0, AR_OFFSET), "seed"));
-        return new Plan(id, code, code, null, true, publicVisible, 10, Set.of("POS"),
-                Map.of("maxBranches", 1), prices);
+        return new Plan(id, code, code, null, true, publicVisible, false, 10, Set.of("SALES_CASH"),
+                Map.of("maxArcaInvoicesPerMonth", 100), prices);
+    }
+
+    /** Plan a medida (EMPRESA): sin precios versionados. */
+    public static Plan customPlan(String code, boolean publicVisible) {
+        return new Plan(UUID.randomUUID(), code, code, null, true, publicVisible, true, 40,
+                Set.of("SALES_CASH", "METRICS_FINANCIAL"), Map.of(), List.of());
     }
 
     public static Builder subscription() {

@@ -9,6 +9,7 @@ import com.centauro.billing.domain.enums.SuspensionReason;
 import com.centauro.billing.domain.exception.GatewayUnavailableException;
 import com.centauro.billing.domain.exception.InvalidSubscriptionTransitionException;
 import com.centauro.billing.domain.exception.PlanNotFoundException;
+import com.centauro.billing.domain.exception.PlanRequiresContactException;
 import com.centauro.billing.domain.exception.PlanWithoutPriceException;
 import com.centauro.billing.domain.exception.SamePlanException;
 import com.centauro.billing.domain.exception.SubscriptionNotFoundException;
@@ -36,6 +37,7 @@ import static com.centauro.billing.support.TestFixtures.AR;
 import static com.centauro.billing.support.TestFixtures.NOW;
 import static com.centauro.billing.support.TestFixtures.TERMS;
 import static com.centauro.billing.support.TestFixtures.clockAt;
+import static com.centauro.billing.support.TestFixtures.customPlan;
 import static com.centauro.billing.support.TestFixtures.plan;
 import static com.centauro.billing.support.TestFixtures.subscription;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,8 +51,8 @@ class TenantSubscriptionUseCaseTest {
     private InMemoryPlanRepository plans;
     private InMemoryEventRepository events;
     private FakePaymentGateway gateway;
-    private Plan pro;
-    private Plan basico;
+    private Plan profesional;
+    private Plan inicial;
 
     @BeforeEach
     void setUp() {
@@ -58,8 +60,8 @@ class TenantSubscriptionUseCaseTest {
         plans = new InMemoryPlanRepository();
         events = new InMemoryEventRepository();
         gateway = new FakePaymentGateway();
-        pro = plans.put(plan("PRO", true, new BigDecimal("25000")));
-        basico = plans.put(plan("BASICO", true, new BigDecimal("10000")));
+        profesional = plans.put(plan("PROFESIONAL", true, new BigDecimal("59900")));
+        inicial = plans.put(plan("INICIAL", true, new BigDecimal("14900")));
     }
 
     private TenantSubscriptionUseCase useCase(Optional<FakePaymentGateway> withGateway) {
@@ -71,13 +73,13 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void getSubscriptionBuildsTheTenantView() {
-        subscriptions.put(subscription().planId(pro.getId()).build());
+        subscriptions.put(subscription().planId(profesional.getId()).build());
 
         TenantSubscriptionView view = useCase(Optional.empty()).getSubscription("tenant-1");
 
         assertThat(view.status()).isEqualTo("TRIALING");
         assertThat(view.accessLevel()).isEqualTo("FULL");
-        assertThat(view.plan().code()).isEqualTo("PRO");
+        assertThat(view.plan().code()).isEqualTo("PROFESIONAL");
         assertThat(view.price().amount()).isEqualTo("25000.00");
         assertThat(view.trialDaysLeft()).isEqualTo(14);
         assertThat(view.notice().code()).isEqualTo("TRIAL_ACTIVE");
@@ -96,17 +98,64 @@ class TenantSubscriptionUseCaseTest {
     void plansListOnlyOfferablePlansWithPriceAndMarksCurrent() {
         plans.put(plan("OCULTO", false, new BigDecimal("1")));
         plans.put(plan("SINPRECIO", true, null));
-        subscriptions.put(subscription().planId(pro.getId()).build());
+        subscriptions.put(subscription().planId(profesional.getId()).build());
 
         List<PublicPlanView> result = useCase(Optional.empty()).listPlans("tenant-1");
 
-        assertThat(result).extracting(PublicPlanView::code).containsExactlyInAnyOrder("PRO", "BASICO");
-        assertThat(result).filteredOn(PublicPlanView::current).extracting(PublicPlanView::code).containsExactly("PRO");
+        assertThat(result).extracting(PublicPlanView::code).containsExactlyInAnyOrder("PROFESIONAL", "INICIAL");
+        assertThat(result).filteredOn(PublicPlanView::current).extracting(PublicPlanView::code).containsExactly("PROFESIONAL");
+    }
+
+    @Test
+    void customPricingPlanIsListedWithoutPrice() {
+        plans.put(customPlan("EMPRESA", true));
+        plans.put(customPlan("A_MEDIDA_OCULTO", false));
+        subscriptions.put(subscription().planId(profesional.getId()).build());
+
+        List<PublicPlanView> result = useCase(Optional.empty()).listPlans("tenant-1");
+
+        assertThat(result).extracting(PublicPlanView::code)
+                .containsExactlyInAnyOrder("PROFESIONAL", "INICIAL", "EMPRESA");
+        PublicPlanView empresa = result.stream().filter(p -> p.code().equals("EMPRESA")).findFirst().orElseThrow();
+        assertThat(empresa.customPricing()).isTrue();
+        assertThat(empresa.price()).isNull();
+        assertThat(empresa.features()).contains("METRICS_FINANCIAL");
+        assertThat(result).filteredOn(p -> !p.code().equals("EMPRESA"))
+                .allSatisfy(p -> {
+                    assertThat(p.customPricing()).isFalse();
+                    assertThat(p.price()).isNotNull();
+                });
+    }
+
+    @Test
+    void tenantViewExposesPlanFeaturesAndLimits() {
+        subscriptions.put(subscription().planId(profesional.getId()).build());
+
+        TenantSubscriptionView view = useCase(Optional.empty()).getSubscription("tenant-1");
+
+        assertThat(view.plan().features()).containsExactly("SALES_CASH");
+        assertThat(view.plan().limits()).containsEntry("maxArcaInvoicesPerMonth", 100);
+        assertThat(view.plan().customPricing()).isFalse();
+    }
+
+    @Test
+    void tenantCannotSwitchToCustomPricingPlan() {
+        plans.put(customPlan("EMPRESA", true));
+        Subscription s = subscription().planId(profesional.getId()).status(SubscriptionStatus.ACTIVE)
+                .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-5").build();
+        subscriptions.put(s);
+
+        assertThatThrownBy(() -> useCase(Optional.of(gateway)).changePlan("tenant-1", "EMPRESA", OWNER))
+                .isInstanceOf(PlanRequiresContactException.class)
+                .hasFieldOrPropertyWithValue("code", "PLAN_REQUIRES_CONTACT");
+        assertThat(s.getPlanId()).isEqualTo(profesional.getId());
+        assertThat(events.events).isEmpty();
+        assertThat(gateway.amountUpdates).isEmpty();
     }
 
     @Test
     void cancelWithoutGatewaySchedulesAndCallsNothing() {
-        subscriptions.put(subscription().planId(pro.getId()).build());
+        subscriptions.put(subscription().planId(profesional.getId()).build());
 
         TenantSubscriptionView view = useCase(Optional.empty()).cancel("tenant-1", "caro", OWNER);
 
@@ -117,7 +166,7 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void cancelWithGatewaySubscriptionCancelsAtGateway() {
-        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+        subscriptions.put(subscription().planId(profesional.getId()).status(SubscriptionStatus.ACTIVE)
                 .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-123").build());
 
         useCase(Optional.of(gateway)).cancel("tenant-1", null, OWNER);
@@ -127,7 +176,7 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void withActiveTransactionTheGatewayIsCalledOnlyAfterCommit() {
-        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+        subscriptions.put(subscription().planId(profesional.getId()).status(SubscriptionStatus.ACTIVE)
                 .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-123").build());
         TransactionSynchronizationManager.initSynchronization();
         try {
@@ -143,11 +192,11 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void rollbackNeverReachesTheGateway() {
-        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+        subscriptions.put(subscription().planId(profesional.getId()).status(SubscriptionStatus.ACTIVE)
                 .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-9").build());
         TransactionSynchronizationManager.initSynchronization();
         try {
-            useCase(Optional.of(gateway)).changePlan("tenant-1", "BASICO", OWNER);
+            useCase(Optional.of(gateway)).changePlan("tenant-1", "INICIAL", OWNER);
             TransactionSynchronizationManager.getSynchronizations()
                     .forEach(sync -> sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK));
 
@@ -159,14 +208,14 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void failedOperationDoesNotCallOrScheduleTheGateway() {
-        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.CANCELED)
+        subscriptions.put(subscription().planId(profesional.getId()).status(SubscriptionStatus.CANCELED)
                 .gatewaySubscriptionId("pre-7").build());
         TenantSubscriptionUseCase useCase = useCase(Optional.of(gateway));
         TransactionSynchronizationManager.initSynchronization();
         try {
             assertThatThrownBy(() -> useCase.cancel("tenant-1", null, OWNER))
                     .isInstanceOf(InvalidSubscriptionTransitionException.class);
-            assertThatThrownBy(() -> useCase.changePlan("tenant-1", "BASICO", OWNER))
+            assertThatThrownBy(() -> useCase.changePlan("tenant-1", "INICIAL", OWNER))
                     .isInstanceOf(InvalidSubscriptionTransitionException.class);
 
             assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
@@ -179,7 +228,7 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void gatewayErrorAfterCommitIsLoggedAndDoesNotPropagate() {
-        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+        subscriptions.put(subscription().planId(profesional.getId()).status(SubscriptionStatus.ACTIVE)
                 .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-1").build());
         gateway.failure = new IllegalStateException("MP caído");
         TransactionSynchronizationManager.initSynchronization();
@@ -195,7 +244,7 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void gatewaySubscriptionWithoutConfiguredGatewayFails() {
-        Subscription s = subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+        Subscription s = subscription().planId(profesional.getId()).status(SubscriptionStatus.ACTIVE)
                 .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-123").build();
         subscriptions.put(s);
 
@@ -206,7 +255,7 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void cancelTwiceIsInvalidTransition() {
-        subscriptions.put(subscription().planId(pro.getId()).build());
+        subscriptions.put(subscription().planId(profesional.getId()).build());
         TenantSubscriptionUseCase useCase = useCase(Optional.empty());
         useCase.cancel("tenant-1", null, OWNER);
 
@@ -216,34 +265,34 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void changePlanUpdatesPlanAndPriceSnapshot() {
-        Subscription s = subscription().planId(pro.getId()).build();
+        Subscription s = subscription().planId(profesional.getId()).build();
         subscriptions.put(s);
 
-        TenantSubscriptionView view = useCase(Optional.empty()).changePlan("tenant-1", "BASICO", OWNER);
+        TenantSubscriptionView view = useCase(Optional.empty()).changePlan("tenant-1", "INICIAL", OWNER);
 
-        assertThat(view.plan().code()).isEqualTo("BASICO");
-        assertThat(view.price().amount()).isEqualTo("10000.00");
-        assertThat(s.getPlanId()).isEqualTo(basico.getId());
+        assertThat(view.plan().code()).isEqualTo("INICIAL");
+        assertThat(view.price().amount()).isEqualTo("14900.00");
+        assertThat(s.getPlanId()).isEqualTo(inicial.getId());
     }
 
     @Test
     void changePlanWithGatewayUpdatesAmount() {
-        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
+        subscriptions.put(subscription().planId(profesional.getId()).status(SubscriptionStatus.ACTIVE)
                 .currentPeriodEnd(NOW.plusDays(10)).gatewaySubscriptionId("pre-9").build());
 
-        useCase(Optional.of(gateway)).changePlan("tenant-1", "BASICO", OWNER);
+        useCase(Optional.of(gateway)).changePlan("tenant-1", "INICIAL", OWNER);
 
-        assertThat(gateway.amountUpdates).containsExactly("pre-9:10000.00");
+        assertThat(gateway.amountUpdates).containsExactly("pre-9:14900.00");
     }
 
     @Test
     void changePlanErrors() {
         plans.put(plan("OCULTO", false, new BigDecimal("1")));
         plans.put(plan("SINPRECIO", true, null));
-        subscriptions.put(subscription().planId(pro.getId()).build());
+        subscriptions.put(subscription().planId(profesional.getId()).build());
         TenantSubscriptionUseCase useCase = useCase(Optional.empty());
 
-        assertThatThrownBy(() -> useCase.changePlan("tenant-1", "PRO", OWNER)).isInstanceOf(SamePlanException.class);
+        assertThatThrownBy(() -> useCase.changePlan("tenant-1", "PROFESIONAL", OWNER)).isInstanceOf(SamePlanException.class);
         assertThatThrownBy(() -> useCase.changePlan("tenant-1", "OCULTO", OWNER))
                 .isInstanceOf(PlanNotFoundException.class);
         assertThatThrownBy(() -> useCase.changePlan("tenant-1", "SINPRECIO", OWNER))
@@ -252,10 +301,10 @@ class TenantSubscriptionUseCaseTest {
 
     @Test
     void changePlanWithAdminSuspensionIsInvalid() {
-        subscriptions.put(subscription().planId(pro.getId()).status(SubscriptionStatus.SUSPENDED)
+        subscriptions.put(subscription().planId(profesional.getId()).status(SubscriptionStatus.SUSPENDED)
                 .suspensionReason(SuspensionReason.ADMIN_READ_ONLY).build());
 
-        assertThatThrownBy(() -> useCase(Optional.empty()).changePlan("tenant-1", "BASICO", OWNER))
+        assertThatThrownBy(() -> useCase(Optional.empty()).changePlan("tenant-1", "INICIAL", OWNER))
                 .isInstanceOf(InvalidSubscriptionTransitionException.class);
     }
 }

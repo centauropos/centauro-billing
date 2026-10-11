@@ -75,7 +75,7 @@ public class InMemoryPlanRepository implements PlanRepositoryPort {
 
     private Plan withPrices(Plan p) {
         return new Plan(p.getId(), p.getCode(), p.getName(), p.getDescription(), p.isActive(), p.isPublicVisible(),
-                p.getSortOrder(), p.getFeatures(), p.getLimits(),
+                p.isCustomPricing(), p.getSortOrder(), p.getFeatures(), p.getLimits(),
                 prices.stream().filter(pr -> pr.planId().equals(p.getId())).toList());
     }
 }
