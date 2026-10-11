@@ -1,6 +1,7 @@
 package com.centauro.billing.domain.model;
 
 import com.centauro.billing.domain.enums.GatewayName;
+import com.centauro.billing.domain.enums.GatewaySubscriptionStatus;
 import com.centauro.billing.domain.enums.PastDueReason;
 import com.centauro.billing.domain.enums.SubscriptionEventType;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
@@ -47,10 +48,10 @@ public class Subscription {
     private BigDecimal priceAmount;
     private final String currency;
     private GatewayName gateway;
-    private final String gatewaySubscriptionId;
-    private final String gatewayStatus;
-    private final OffsetDateTime gatewayLastModified;
-    private final OffsetDateTime nextChargeAt;
+    private String gatewaySubscriptionId;
+    private String gatewayStatus;
+    private OffsetDateTime gatewayLastModified;
+    private OffsetDateTime nextChargeAt;
     private final String billingEmail;
     private final String companyName;
     private final Long version;
@@ -374,7 +375,79 @@ public class Subscription {
                 null, now);
     }
 
-    // ----------------------------------------------------------------
+    // ---------------------------------------------------------------- pasarela
+
+    /**
+     * El tenant autorizó el débito recurrente (preapproval {@code authorized}). Vincula el medio de pago y fija
+     * plan y precio del checkout, pero no activa: solo un cobro aprobado activa o renueva (T5).
+     * Autorizar un débito nuevo deja sin efecto una baja agendada.
+     */
+    public SubscriptionEvent linkGatewaySubscription(GatewayName gatewayName, String preapprovalId,
+                                                     OffsetDateTime lastModified, OffsetDateTime nextCharge,
+                                                     UUID checkoutPlanId, BigDecimal checkoutAmount,
+                                                     UUID checkoutId, Actor actor, OffsetDateTime now) {
+        Objects.requireNonNull(preapprovalId, "preapprovalId");
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("gatewaySubscriptionId", preapprovalId);
+        data.put("previousGatewaySubscriptionId", gatewaySubscriptionId);
+        data.put("checkoutId", checkoutId == null ? null : checkoutId.toString());
+        data.put("planId", checkoutPlanId.toString());
+        data.put("priceAmount", Amounts.format(checkoutAmount));
+        data.put("cancelAtPeriodEndCleared", cancelAtPeriodEnd);
+        gateway = gatewayName;
+        gatewaySubscriptionId = preapprovalId;
+        gatewayStatus = GatewaySubscriptionStatus.AUTHORIZED.storedValue();
+        gatewayLastModified = lastModified;
+        nextChargeAt = nextCharge;
+        planId = checkoutPlanId;
+        priceAmount = Amounts.scale(checkoutAmount);
+        cancelAtPeriodEnd = false;
+        return SubscriptionEvent.of(this, SubscriptionEventType.PAYMENT_METHOD_AUTHORIZED, status, actor, null,
+                data, "PAYMENT_METHOD_AUTHORIZED:" + preapprovalId, now);
+    }
+
+    /**
+     * Estado nuevo del preapproval vigente. No cambia el estado de la suscripción: pausado o cancelado en la
+     * pasarela solo significa que no va a haber más cobros, y el período pago se respeta.
+     * Devuelve el evento a registrar o {@code null} si el estado no cambió.
+     */
+    public SubscriptionEvent syncGatewayState(GatewaySubscriptionStatus newStatus, OffsetDateTime lastModified,
+                                              OffsetDateTime nextCharge, Actor actor, OffsetDateTime now) {
+        String previous = gatewayStatus;
+        String stored = newStatus.storedValue();
+        if (lastModified != null) {
+            gatewayLastModified = lastModified;
+        }
+        nextChargeAt = newStatus == GatewaySubscriptionStatus.AUTHORIZED ? nextCharge : null;
+        if (stored.equals(previous)) {
+            return null;
+        }
+        gatewayStatus = stored;
+        SubscriptionEventType type = switch (newStatus) {
+            case PAUSED -> SubscriptionEventType.GATEWAY_PAUSED;
+            case CANCELLED -> SubscriptionEventType.GATEWAY_CANCELLED;
+            case AUTHORIZED -> SubscriptionEventType.GATEWAY_RESUMED;
+            default -> null;
+        };
+        if (type == null) {
+            return null;
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("gatewaySubscriptionId", gatewaySubscriptionId);
+        data.put("previousGatewayStatus", previous);
+        data.put("gatewayStatus", stored);
+        return SubscriptionEvent.of(this, type, status, actor, null, data, null, now);
+    }
+
+    /** Evento informativo (sin cambio de estado): cobro rechazado, diferencia de importe, conciliación. */
+    public SubscriptionEvent recordGatewayNotice(SubscriptionEventType type, Map<String, Object> data,
+                                                 String dedupeKey, Actor actor, String reason, OffsetDateTime now) {
+        return SubscriptionEvent.of(this, type, status, actor, reason, data, dedupeKey, now);
+    }
+
+    public boolean isGatewayAuthorized() {
+        return hasGatewaySubscription() && GatewaySubscriptionStatus.AUTHORIZED.storedValue().equals(gatewayStatus);
+    }
 
     public boolean hasGatewaySubscription() {
         return gatewaySubscriptionId != null && !gatewaySubscriptionId.isBlank();

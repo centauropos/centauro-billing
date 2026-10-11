@@ -10,6 +10,7 @@ import com.centauro.billing.domain.exception.GatewayTimeoutException;
 import com.centauro.billing.domain.exception.GatewayUnavailableException;
 import com.centauro.billing.domain.exception.InvalidBillingRequestException;
 import com.centauro.billing.domain.exception.InvalidSubscriptionTransitionException;
+import com.centauro.billing.domain.exception.InvalidWebhookSignatureException;
 import com.centauro.billing.domain.exception.PlanCustomPricingException;
 import com.centauro.billing.domain.exception.PlanNotFoundException;
 import com.centauro.billing.domain.exception.PlanPriceNotFoundException;
@@ -69,6 +70,7 @@ public class GlobalExceptionHandler {
             Map.entry(PlanRequiresContactException.class, HttpStatus.UNPROCESSABLE_ENTITY),
             Map.entry(GatewayRejectedException.class, HttpStatus.UNPROCESSABLE_ENTITY),
             Map.entry(InvalidBillingRequestException.class, HttpStatus.BAD_REQUEST),
+            Map.entry(InvalidWebhookSignatureException.class, HttpStatus.UNAUTHORIZED),
             Map.entry(GatewayUnavailableException.class, HttpStatus.BAD_GATEWAY),
             Map.entry(GatewayTimeoutException.class, HttpStatus.GATEWAY_TIMEOUT));
 

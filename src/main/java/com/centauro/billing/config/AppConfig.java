@@ -1,5 +1,6 @@
 package com.centauro.billing.config;
 
+import com.centauro.billing.application.service.GatewaySettings;
 import com.centauro.billing.domain.policy.AccessPolicy;
 import com.centauro.billing.domain.policy.AllowedActionsPolicy;
 import com.centauro.billing.domain.policy.BillingTerms;
@@ -9,6 +10,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.ZoneId;
 
 @Configuration
@@ -43,5 +45,11 @@ public class AppConfig {
     @Bean
     public AllowedActionsPolicy allowedActionsPolicy() {
         return new AllowedActionsPolicy();
+    }
+
+    @Bean
+    public GatewaySettings gatewaySettings(BillingProperties properties) {
+        return new GatewaySettings(Duration.ofHours(properties.checkout().expirationHours()),
+                properties.checkout().backUrl(), properties.jobs().webhookMaxAttempts());
     }
 }

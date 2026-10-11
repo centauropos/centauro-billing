@@ -15,12 +15,10 @@ import com.centauro.billing.domain.exception.SamePlanException;
 import com.centauro.billing.domain.exception.SubscriptionNotFoundException;
 import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.Subscription;
-import com.centauro.billing.domain.policy.AccessPolicy;
-import com.centauro.billing.domain.policy.AllowedActionsPolicy;
-import com.centauro.billing.domain.policy.NoticePolicy;
 import com.centauro.billing.domain.port.PaymentGateway;
 import com.centauro.billing.domain.vo.Actor;
 import com.centauro.billing.support.FakePaymentGateway;
+import com.centauro.billing.support.TestFixtures;
 import com.centauro.billing.support.InMemoryEventRepository;
 import com.centauro.billing.support.InMemoryPlanRepository;
 import com.centauro.billing.support.InMemorySubscriptionRepository;
@@ -33,9 +31,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 
-import static com.centauro.billing.support.TestFixtures.AR;
 import static com.centauro.billing.support.TestFixtures.NOW;
-import static com.centauro.billing.support.TestFixtures.TERMS;
 import static com.centauro.billing.support.TestFixtures.clockAt;
 import static com.centauro.billing.support.TestFixtures.customPlan;
 import static com.centauro.billing.support.TestFixtures.plan;
@@ -65,8 +61,7 @@ class TenantSubscriptionUseCaseTest {
     }
 
     private TenantSubscriptionUseCase useCase(Optional<FakePaymentGateway> withGateway) {
-        SubscriptionViewAssembler assembler = new SubscriptionViewAssembler(new AccessPolicy(TERMS),
-                new NoticePolicy(AR), new AllowedActionsPolicy(), TERMS);
+        SubscriptionViewAssembler assembler = TestFixtures.assembler();
         return new TenantSubscriptionUseCase(subscriptions, plans, events,
                 new GatewayOperations(withGateway.<PaymentGateway>map(g -> g)), assembler, clockAt(NOW));
     }

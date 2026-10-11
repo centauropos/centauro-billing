@@ -41,6 +41,22 @@ public class SubscriptionRepositoryAdapter implements SubscriptionRepositoryPort
     }
 
     @Override
+    public Optional<Subscription> findById(UUID id) {
+        return repository.findById(id).map(SubscriptionRepositoryAdapter::toDomain);
+    }
+
+    @Override
+    public Optional<Subscription> findByGatewaySubscriptionId(String gatewaySubscriptionId) {
+        return repository.findFirstByGatewaySubscriptionId(gatewaySubscriptionId)
+                .map(SubscriptionRepositoryAdapter::toDomain);
+    }
+
+    @Override
+    public List<UUID> findWithGatewaySubscription(UUID afterId, int limit) {
+        return repository.findWithGatewaySubscription(afterId, limit);
+    }
+
+    @Override
     public Optional<Subscription> findByTenantIdForUpdate(String tenantId) {
         return repository.findByTenantIdForUpdate(tenantId).map(SubscriptionRepositoryAdapter::toDomain);
     }

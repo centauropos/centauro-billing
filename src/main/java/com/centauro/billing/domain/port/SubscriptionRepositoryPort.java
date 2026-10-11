@@ -14,6 +14,13 @@ public interface SubscriptionRepositoryPort {
 
     Optional<Subscription> findByTenantId(String tenantId);
 
+    Optional<Subscription> findById(UUID id);
+
+    Optional<Subscription> findByGatewaySubscriptionId(String gatewaySubscriptionId);
+
+    /** Suscripciones vinculadas a la pasarela, con cursor por id (conciliación). */
+    List<UUID> findWithGatewaySubscription(UUID afterId, int limit);
+
     /** Lectura con bloqueo pesimista para mutaciones desde la API. */
     Optional<Subscription> findByTenantIdForUpdate(String tenantId);
 

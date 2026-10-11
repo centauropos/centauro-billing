@@ -38,6 +38,22 @@ public class InMemorySubscriptionRepository implements SubscriptionRepositoryPor
     }
 
     @Override
+    public Optional<Subscription> findById(UUID id) {
+        return Optional.ofNullable(byId.get(id));
+    }
+
+    @Override
+    public Optional<Subscription> findByGatewaySubscriptionId(String gatewaySubscriptionId) {
+        return byId.values().stream()
+                .filter(s -> gatewaySubscriptionId.equals(s.getGatewaySubscriptionId())).findFirst();
+    }
+
+    @Override
+    public List<UUID> findWithGatewaySubscription(UUID afterId, int limit) {
+        return due(s -> s.getGatewaySubscriptionId() != null, afterId, limit);
+    }
+
+    @Override
     public Optional<Subscription> findByTenantIdForUpdate(String tenantId) {
         return findByTenantId(tenantId);
     }

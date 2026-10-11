@@ -3,9 +3,7 @@ package com.centauro.billing.application.usecase;
 import com.centauro.billing.application.dto.AccessView;
 import com.centauro.billing.application.service.SubscriptionViewAssembler;
 import com.centauro.billing.domain.model.Plan;
-import com.centauro.billing.domain.policy.AccessPolicy;
-import com.centauro.billing.domain.policy.AllowedActionsPolicy;
-import com.centauro.billing.domain.policy.NoticePolicy;
+import com.centauro.billing.support.TestFixtures;
 import com.centauro.billing.support.InMemoryPlanRepository;
 import com.centauro.billing.support.InMemorySubscriptionRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,9 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 
-import static com.centauro.billing.support.TestFixtures.AR;
 import static com.centauro.billing.support.TestFixtures.NOW;
-import static com.centauro.billing.support.TestFixtures.TERMS;
 import static com.centauro.billing.support.TestFixtures.clockAt;
 import static com.centauro.billing.support.TestFixtures.customPlan;
 import static com.centauro.billing.support.TestFixtures.plan;
@@ -32,8 +28,7 @@ class AccessQueryUseCaseTest {
     void setUp() {
         subscriptions = new InMemorySubscriptionRepository();
         plans = new InMemoryPlanRepository();
-        useCase = new AccessQueryUseCase(subscriptions, plans, new SubscriptionViewAssembler(new AccessPolicy(TERMS),
-                new NoticePolicy(AR), new AllowedActionsPolicy(), TERMS), clockAt(NOW));
+        useCase = new AccessQueryUseCase(subscriptions, plans, TestFixtures.assembler(), clockAt(NOW));
     }
 
     @Test

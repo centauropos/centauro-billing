@@ -22,6 +22,7 @@ import com.centauro.billing.domain.model.PlanPrice;
 import com.centauro.billing.domain.model.Subscription;
 import com.centauro.billing.domain.model.SubscriptionEvent;
 import com.centauro.billing.domain.policy.PeriodCalculator;
+import com.centauro.billing.domain.port.CheckoutRepositoryPort;
 import com.centauro.billing.domain.port.PaymentRepositoryPort;
 import com.centauro.billing.domain.port.PlanRepositoryPort;
 import com.centauro.billing.domain.port.SubscriptionEventRepositoryPort;
@@ -49,11 +50,13 @@ import java.util.stream.Collectors;
 public class PlatformSubscriptionUseCase {
 
     static final int DETAIL_EVENTS_LIMIT = 100;
+    static final int DETAIL_CHECKOUTS_LIMIT = 20;
 
     private final SubscriptionRepositoryPort subscriptions;
     private final PlanRepositoryPort plans;
     private final PaymentRepositoryPort payments;
     private final SubscriptionEventRepositoryPort events;
+    private final CheckoutRepositoryPort checkouts;
     private final GatewayOperations gatewayOperations;
     private final PeriodCalculator periodCalculator;
     private final SubscriptionViewAssembler assembler;
@@ -61,12 +64,14 @@ public class PlatformSubscriptionUseCase {
 
     public PlatformSubscriptionUseCase(SubscriptionRepositoryPort subscriptions, PlanRepositoryPort plans,
                                        PaymentRepositoryPort payments, SubscriptionEventRepositoryPort events,
-                                       GatewayOperations gatewayOperations, PeriodCalculator periodCalculator,
-                                       SubscriptionViewAssembler assembler, Clock clock) {
+                                       CheckoutRepositoryPort checkouts, GatewayOperations gatewayOperations,
+                                       PeriodCalculator periodCalculator, SubscriptionViewAssembler assembler,
+                                       Clock clock) {
         this.subscriptions = subscriptions;
         this.plans = plans;
         this.payments = payments;
         this.events = events;
+        this.checkouts = checkouts;
         this.gatewayOperations = gatewayOperations;
         this.periodCalculator = periodCalculator;
         this.assembler = assembler;
@@ -112,7 +117,8 @@ public class PlatformSubscriptionUseCase {
                         .map(assembler::eventView).toList(),
                 payments.findBySubscriptionId(subscription.getId()).stream()
                         .map(assembler::paymentView).toList(),
-                List.of());
+                checkouts.findRecentBySubscriptionId(subscription.getId(), DETAIL_CHECKOUTS_LIMIT).stream()
+                        .map(assembler::checkoutSummary).toList());
     }
 
     @Transactional

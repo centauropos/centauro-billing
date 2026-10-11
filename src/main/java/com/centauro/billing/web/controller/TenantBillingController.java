@@ -2,14 +2,19 @@ package com.centauro.billing.web.controller;
 
 import com.centauro.billing.application.dto.CancelRequest;
 import com.centauro.billing.application.dto.ChangePlanRequest;
+import com.centauro.billing.application.dto.CheckoutRequest;
+import com.centauro.billing.application.dto.CheckoutView;
 import com.centauro.billing.application.dto.PublicPlanView;
 import com.centauro.billing.application.dto.TenantSubscriptionView;
+import com.centauro.billing.application.usecase.CheckoutUseCase;
 import com.centauro.billing.application.usecase.TenantSubscriptionUseCase;
 import com.centauro.billing.web.openapi.OpenApiConfig;
 import com.centauro.billing.web.security.TenantContextHolder;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,9 +32,20 @@ import java.util.List;
 public class TenantBillingController {
 
     private final TenantSubscriptionUseCase useCase;
+    private final CheckoutUseCase checkoutUseCase;
 
-    public TenantBillingController(TenantSubscriptionUseCase useCase) {
+    public TenantBillingController(TenantSubscriptionUseCase useCase, CheckoutUseCase checkoutUseCase) {
         this.useCase = useCase;
+        this.checkoutUseCase = checkoutUseCase;
+    }
+
+    /** 201 con un checkout nuevo; 200 si se reutiliza el pendiente (mismo plan, importe y pagador). */
+    @PostMapping("/checkout")
+    @PreAuthorize("@billingAuth.canManage()")
+    public ResponseEntity<CheckoutView> checkout(@Valid @RequestBody CheckoutRequest request) {
+        CheckoutView view = checkoutUseCase.start(TenantContextHolder.requireTenantId(), request,
+                TenantContextHolder.tenantUserActor());
+        return ResponseEntity.status(view.reused() ? HttpStatus.OK : HttpStatus.CREATED).body(view);
     }
 
     @GetMapping("/subscription")

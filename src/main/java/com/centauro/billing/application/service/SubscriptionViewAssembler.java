@@ -1,8 +1,10 @@
 package com.centauro.billing.application.service;
 
 import com.centauro.billing.application.dto.AccessView;
+import com.centauro.billing.application.dto.CheckoutSummaryView;
 import com.centauro.billing.application.dto.NoticeView;
 import com.centauro.billing.application.dto.PaymentView;
+import com.centauro.billing.application.dto.PendingCheckoutView;
 import com.centauro.billing.application.dto.PlanAdminView;
 import com.centauro.billing.application.dto.PlanPriceView;
 import com.centauro.billing.application.dto.PlanSummaryView;
@@ -11,8 +13,10 @@ import com.centauro.billing.application.dto.SubscriptionEventView;
 import com.centauro.billing.application.dto.SubscriptionListItem;
 import com.centauro.billing.application.dto.TenantSubscriptionView;
 import com.centauro.billing.domain.enums.AllowedAction;
+import com.centauro.billing.domain.enums.PaymentStatus;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
 import com.centauro.billing.domain.model.AccessDecision;
+import com.centauro.billing.domain.model.GatewayCheckout;
 import com.centauro.billing.domain.model.Payment;
 import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.PlanPrice;
@@ -22,11 +26,14 @@ import com.centauro.billing.domain.policy.AccessPolicy;
 import com.centauro.billing.domain.policy.AllowedActionsPolicy;
 import com.centauro.billing.domain.policy.BillingTerms;
 import com.centauro.billing.domain.policy.NoticePolicy;
+import com.centauro.billing.domain.port.CheckoutRepositoryPort;
+import com.centauro.billing.domain.port.PaymentRepositoryPort;
 import com.centauro.billing.domain.vo.Amounts;
 import org.springframework.stereotype.Component;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.util.Comparator;
 import java.util.Map;
 import java.util.Set;
 
@@ -39,18 +46,38 @@ public class SubscriptionViewAssembler {
     private final AccessPolicy accessPolicy;
     private final NoticePolicy noticePolicy;
     private final AllowedActionsPolicy allowedActionsPolicy;
+    private final CheckoutRepositoryPort checkouts;
+    private final PaymentRepositoryPort payments;
+    private final GatewayOperations gatewayOperations;
     private final ZoneId zone;
 
     public SubscriptionViewAssembler(AccessPolicy accessPolicy, NoticePolicy noticePolicy,
-                                     AllowedActionsPolicy allowedActionsPolicy, BillingTerms terms) {
+                                     AllowedActionsPolicy allowedActionsPolicy, CheckoutRepositoryPort checkouts,
+                                     PaymentRepositoryPort payments, GatewayOperations gatewayOperations,
+                                     BillingTerms terms) {
         this.accessPolicy = accessPolicy;
         this.noticePolicy = noticePolicy;
         this.allowedActionsPolicy = allowedActionsPolicy;
+        this.checkouts = checkouts;
+        this.payments = payments;
+        this.gatewayOperations = gatewayOperations;
         this.zone = terms.zone();
     }
 
+    /**
+     * Vista del tenant con checkout pendiente y aviso de cobro rechazado (consulta checkouts y pagos). El
+     * {@code /access} de los consumidores no los usa: su aviso sale solo del estado.
+     */
     public TenantSubscriptionView tenantView(Subscription subscription, Plan plan, OffsetDateTime now) {
         AccessDecision decision = accessPolicy.evaluate(subscription, now);
+        PendingCheckoutView pendingCheckout = checkouts.findPendingBySubscriptionId(subscription.getId())
+                .filter(c -> c.isUsable(now))
+                .map(c -> new PendingCheckoutView(c.getId(), c.getInitPoint(), local(c.getExpiresAt())))
+                .orElse(null);
+        boolean lastPaymentRejected = payments.findBySubscriptionId(subscription.getId()).stream()
+                .max(Comparator.comparing(Payment::createdAt, Comparator.nullsFirst(Comparator.naturalOrder())))
+                .map(p -> p.status() == PaymentStatus.REJECTED)
+                .orElse(false);
         PriceView price = subscription.getPriceAmount() != null
                 ? PriceView.monthly(subscription.getPriceAmount(), subscription.getCurrency())
                 : plan == null ? null
@@ -70,11 +97,18 @@ public class SubscriptionViewAssembler {
                 local(subscription.getCurrentPeriodEnd()),
                 local(decision.effectiveGraceEndsAt()),
                 subscription.isCancelAtPeriodEnd(),
-                "authorized".equalsIgnoreCase(subscription.getGatewayStatus()),
+                subscription.isGatewayAuthorized(),
                 local(subscription.getNextChargeAt()),
-                null,
-                NoticeView.from(noticePolicy.notice(subscription, decision, now)),
-                allowedActionsPolicy.allowedActions(subscription, decision).stream().map(AllowedAction::name).toList());
+                pendingCheckout,
+                NoticeView.from(noticePolicy.notice(subscription, decision, lastPaymentRejected, now)),
+                allowedActionsPolicy.allowedActions(subscription, decision, gatewayOperations.isAvailable()).stream()
+                        .map(AllowedAction::name).toList());
+    }
+
+    public CheckoutSummaryView checkoutSummary(GatewayCheckout checkout) {
+        return new CheckoutSummaryView(checkout.getId(), checkout.getPlanId(), checkout.getStatus().name(),
+                Amounts.format(checkout.getPriceAmount()), checkout.getCurrency(), checkout.getGatewayPreapprovalId(),
+                local(checkout.getStartDate()), local(checkout.getExpiresAt()), local(checkout.getCreatedAt()));
     }
 
     public AccessView accessView(String tenantId, Subscription subscription, Plan plan, OffsetDateTime now) {

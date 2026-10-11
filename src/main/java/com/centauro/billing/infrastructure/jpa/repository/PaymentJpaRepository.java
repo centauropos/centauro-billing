@@ -22,4 +22,6 @@ public interface PaymentJpaRepository extends JpaRepository<PaymentEntity, UUID>
                                                                 String reference);
 
     List<PaymentEntity> findBySubscriptionIdOrderByCreatedAtDesc(UUID subscriptionId);
+
+    Optional<PaymentEntity> findBySourceAndGatewayPaymentId(PaymentSource source, String gatewayPaymentId);
 }

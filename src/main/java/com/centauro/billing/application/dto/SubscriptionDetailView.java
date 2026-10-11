@@ -12,6 +12,6 @@ public record SubscriptionDetailView(
         Long version,
         List<SubscriptionEventView> events,
         List<PaymentView> payments,
-        List<Object> checkouts
+        List<CheckoutSummaryView> checkouts
 ) {
 }

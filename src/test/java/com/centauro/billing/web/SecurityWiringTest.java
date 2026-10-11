@@ -1,6 +1,11 @@
 package com.centauro.billing.web;
 
 import com.centauro.billing.application.usecase.AccessQueryUseCase;
+import com.centauro.billing.application.usecase.CheckoutUseCase;
+import com.centauro.billing.application.usecase.WebhookUseCase;
+import com.centauro.billing.infrastructure.mercadopago.MercadoPagoProperties;
+import com.centauro.billing.infrastructure.mercadopago.MercadoPagoSignatureVerifier;
+import com.centauro.billing.web.controller.MercadoPagoWebhookController;
 import com.centauro.billing.application.usecase.ManualPaymentUseCase;
 import com.centauro.billing.application.usecase.PlanAdminUseCase;
 import com.centauro.billing.application.usecase.PlatformSubscriptionUseCase;
@@ -24,19 +29,26 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Date;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
 import static com.centauro.billing.support.TestFixtures.TERMS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -44,19 +56,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /** Cableado real de las cadenas de seguridad, sin base de datos: los use cases son mocks. */
 @WebMvcTest(controllers = {TenantBillingController.class, InternalBillingController.class,
-        PlatformSubscriptionController.class, PlatformPlanController.class})
-@Import({SecurityConfig.class, CorsConfig.class, BillingAuthorization.class, SecurityWiringTest.TestBeans.class})
+        PlatformSubscriptionController.class, PlatformPlanController.class, MercadoPagoWebhookController.class})
+@Import({SecurityConfig.class, CorsConfig.class, BillingAuthorization.class, MercadoPagoSignatureVerifier.class,
+        SecurityWiringTest.TestBeans.class})
 @TestPropertySource(properties = {
         "jwt.secret=" + SecurityWiringTest.SECRET,
-        "billing.internal.api-key=" + SecurityWiringTest.API_KEY
+        "billing.internal.api-key=" + SecurityWiringTest.API_KEY,
+        "billing.mercadopago.webhook-secret=" + SecurityWiringTest.WEBHOOK_SECRET
 })
 class SecurityWiringTest {
 
     static final String SECRET = "test-secret-key-which-is-long-enough-for-hs256";
     static final String API_KEY = "internal-test-key";
+    static final String WEBHOOK_SECRET = "webhook-test-secret";
 
     @TestConfiguration
-    @EnableConfigurationProperties(BillingProperties.class)
+    @EnableConfigurationProperties({BillingProperties.class, MercadoPagoProperties.class})
     static class TestBeans {
         @Bean
         Clock clock() {
@@ -84,6 +99,10 @@ class SecurityWiringTest {
     private ManualPaymentUseCase manualPaymentUseCase;
     @MockitoBean
     private AccessQueryUseCase accessQueryUseCase;
+    @MockitoBean
+    private CheckoutUseCase checkoutUseCase;
+    @MockitoBean
+    private WebhookUseCase webhookUseCase;
 
     @Test
     void platformWithoutPermissionIsForbidden() throws Exception {
@@ -140,8 +159,60 @@ class SecurityWiringTest {
     }
 
     @Test
-    void webhooksAreClosedUntilPr1b() throws Exception {
-        mvc.perform(post("/webhooks/mercadopago")).andExpect(status().isUnauthorized());
+    void webhookWithValidSignatureIsPublic() throws Exception {
+        String ts = String.valueOf(Instant.now().getEpochSecond());
+        String manifest = "id:123456;request-id:req-1;ts:" + ts + ";";
+
+        mvc.perform(post("/webhooks/mercadopago").param("data.id", "123456").param("type", "subscription_preapproval")
+                        .header("x-request-id", "req-1")
+                        .header("x-signature", "ts=" + ts + ",v1=" + hmac(manifest))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\":\"n-1\",\"type\":\"subscription_preapproval\",\"data\":{\"id\":\"123456\"}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.received").value(true));
+
+        verify(webhookUseCase).receive(any());
+    }
+
+    @Test
+    void webhookWithoutOrWithBadSignatureIsUnauthorizedAndNotStored() throws Exception {
+        mvc.perform(post("/webhooks/mercadopago").param("data.id", "123456")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"data\":{\"id\":\"123456\"}}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("INVALID_SIGNATURE"));
+        mvc.perform(post("/webhooks/mercadopago").param("data.id", "123456")
+                        .header("x-request-id", "req-1")
+                        .header("x-signature", "ts=1700000000,v1=" + "0".repeat(64))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"data\":{\"id\":\"123456\"}}"))
+                .andExpect(status().isUnauthorized());
+
+        verifyNoInteractions(webhookUseCase);
+    }
+
+    @Test
+    void otherWebhookRoutesAndMethodsStayClosed() throws Exception {
+        mvc.perform(get("/webhooks/mercadopago")).andExpect(status().isUnauthorized());
+        mvc.perform(post("/webhooks/otro")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void checkoutRequiresToken() throws Exception {
+        mvc.perform(post("/api/v1/billing/checkout").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"planCode\":\"PROFESIONAL\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void checkoutRequiresBillingManage() throws Exception {
+        mvc.perform(post("/api/v1/billing/checkout").header("Authorization", bearer(List.of(), "USER"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"planCode\":\"PROFESIONAL\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    private static String hmac(String manifest) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(WEBHOOK_SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        return HexFormat.of().formatHex(mac.doFinal(manifest.getBytes(StandardCharsets.UTF_8)));
     }
 
     @Test
