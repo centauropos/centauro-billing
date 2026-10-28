@@ -19,6 +19,7 @@ import com.centauro.billing.domain.exception.PlanRequiresContactException;
 import com.centauro.billing.domain.model.GatewayCheckout;
 import com.centauro.billing.domain.model.Plan;
 import com.centauro.billing.domain.model.Subscription;
+import com.centauro.billing.application.service.CheckoutTransactions;
 import com.centauro.billing.domain.vo.Actor;
 import com.centauro.billing.domain.vo.RecurringCheckoutRequest;
 import com.centauro.billing.support.GatewayHarness;
@@ -172,6 +173,46 @@ class CheckoutUseCaseTest {
     }
 
     @Test
+    void authorizeClaimStaysFirmAfterThirtySeconds() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        // Claim con updatedAt hace 10 min (>30 s): la ventana vieja lo habría liberado; el claim firme no.
+        GatewayCheckout inFlight = h.checkouts.save(GatewayCheckout.create(s, pro.getId(), new BigDecimal("59900"),
+                "owner@test.com", null, NOW.plusHours(24), "owner", NOW.minusHours(1)));
+        inFlight.markAuthorizeAttempted(NOW.minusMinutes(10));
+        h.checkouts.save(inFlight);
+
+        assertThat(CheckoutTransactions.isAuthorizeInProgress(inFlight)).isTrue();
+        assertThatThrownBy(() -> authorize(inFlight.getId())).isInstanceOf(CheckoutInProgressException.class)
+                .extracting("code").isEqualTo("CHECKOUT_IN_PROGRESS");
+        assertThat(h.gateway.created).isEmpty();
+    }
+
+    @Test
+    void prepareSamePlanWhileAuthorizeInFlightIsAConflict() {
+        h.store(subscription().planId(pro.getId()).build());
+        CheckoutView prepared = prepare("PROFESIONAL");
+        GatewayCheckout inFlight = h.checkouts.findById(prepared.checkoutId()).orElseThrow();
+        inFlight.markAuthorizeAttempted(NOW.plusSeconds(1));
+        h.checkouts.save(inFlight);
+
+        assertThatThrownBy(() -> prepare("PROFESIONAL")).isInstanceOf(CheckoutInProgressException.class)
+                .extracting("code").isEqualTo("CHECKOUT_IN_PROGRESS");
+        assertThat(h.checkouts.all()).hasSize(1);
+    }
+
+    @Test
+    void authorizeRejectedWhenSubscriptionIsAdminSuspended() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        UUID checkoutId = prepare("PROFESIONAL").checkoutId();
+        s.suspendByAdmin(SuspensionReason.ADMIN_READ_ONLY, Actor.platformAdmin("admin"), "bloqueo", NOW);
+        h.subscriptions.put(s);
+
+        assertThatThrownBy(() -> authorize(checkoutId)).isInstanceOf(CheckoutNotAllowedException.class);
+        assertThat(h.gateway.created).isEmpty();
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.PENDING);
+    }
+
+    @Test
     void authorizeOfAnotherTenantCheckoutIsNotFound() {
         h.store(subscription().planId(pro.getId()).build());
         CheckoutView prepared = prepare("PROFESIONAL");
@@ -249,34 +290,65 @@ class CheckoutUseCaseTest {
     }
 
     @Test
-    void gatewayErrorsReachTheTenantWithAGenericMessage() {
+    void gatewayRejectionMarksFailedAndUsesGenericMessage() {
         h.store(subscription().planId(pro.getId()).build());
         UUID checkoutId = prepare("PROFESIONAL").checkoutId();
-        h.gateway.failure = new GatewayRejectedException("card_token inválido (status 400)");
+        h.gateway.failure = new GatewayRejectedException("Invalid card_token_id card_tok_fake_9f3a");
 
         assertThatThrownBy(() -> authorize(checkoutId)).isInstanceOf(GatewayRejectedException.class)
                 .hasMessage("No se pudo iniciar el pago con Mercado Pago");
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.FAILED);
     }
 
     @Test
-    void gatewayTimeoutLeavesTheCheckoutFailedAndPropagates() {
+    void gatewayTimeoutLeavesPendingAndAllowsRetryWithSameCheckout() {
         h.store(subscription().planId(pro.getId()).build());
         UUID checkoutId = prepare("PROFESIONAL").checkoutId();
         h.gateway.failure = new GatewayTimeoutException("timeout");
 
         assertThatThrownBy(() -> authorize(checkoutId)).isInstanceOf(GatewayTimeoutException.class);
 
-        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.FAILED);
+        GatewayCheckout afterTimeout = h.checkouts.findById(checkoutId).orElseThrow();
+        assertThat(afterTimeout.getStatus()).isEqualTo(CheckoutStatus.PENDING);
+        assertThat(afterTimeout.getGatewayPreapprovalId()).isNull();
+        assertThat(CheckoutTransactions.isAuthorizeInProgress(afterTimeout)).isFalse();
+
+        h.gateway.failure = null;
+        CheckoutView retried = authorize(checkoutId);
+        assertThat(retried.checkoutId()).isEqualTo(checkoutId);
+        assertThat(h.gateway.created).hasSize(1);
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getGatewayPreapprovalId()).isEqualTo("pre-1");
     }
 
     @Test
-    void unexpectedGatewayErrorIsReportedAsUnavailable() {
+    void gatewayUnavailableLeavesPendingWithoutFailing() {
+        h.store(subscription().planId(pro.getId()).build());
+        UUID checkoutId = prepare("PROFESIONAL").checkoutId();
+        h.gateway.failure = new GatewayUnavailableException("502");
+
+        assertThatThrownBy(() -> authorize(checkoutId)).isInstanceOf(GatewayUnavailableException.class);
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.PENDING);
+        assertThat(CheckoutTransactions.isAuthorizeInProgress(
+                h.checkouts.findById(checkoutId).orElseThrow())).isFalse();
+    }
+
+    @Test
+    void unexpectedGatewayErrorIsReportedAsUnavailableAndLeavesPending() {
         h.store(subscription().planId(pro.getId()).build());
         UUID checkoutId = prepare("PROFESIONAL").checkoutId();
         h.gateway.failure = new IllegalStateException("boom");
 
         assertThatThrownBy(() -> authorize(checkoutId)).isInstanceOf(GatewayUnavailableException.class);
-        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.FAILED);
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.PENDING);
+    }
+
+    @Test
+    void redactForLogMasksCardTokensAndEmails() {
+        assertThat(CheckoutUseCase.redactForLog("card_token_id=tok_secret for owner@test.com"))
+                .contains("card_token_id=***")
+                .contains("***")
+                .doesNotContain("tok_secret")
+                .doesNotContain("owner@test.com");
     }
 
     @Test

@@ -84,11 +84,21 @@ public class GatewayCheckout {
     }
 
     /**
-     * Marca el intento de authorize (bump de {@code updatedAt}) para detectar carreras: otro authorize
-     * concurrente ve PENDING sin preapproval y {@code updatedAt > createdAt} dentro de la ventana.
+     * Marca el intento de authorize (bump de {@code updatedAt}): claim firme hasta attach, FAILED o
+     * {@link #clearAuthorizeClaim}; otro authorize concurrente ve PENDING sin preapproval y
+     * {@code updatedAt > createdAt}.
      */
     public void markAuthorizeAttempted(OffsetDateTime now) {
         this.updatedAt = now;
+    }
+
+    /**
+     * Libera el claim tras timeout/5xx para poder reintentar con la misma idempotency key, sin pasar a FAILED.
+     */
+    public void clearAuthorizeClaim() {
+        if (createdAt != null) {
+            this.updatedAt = createdAt;
+        }
     }
 
     public void attachGateway(String preapprovalId, String link, OffsetDateTime now) {

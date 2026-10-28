@@ -153,6 +153,29 @@ class MercadoPagoGatewayTest {
     }
 
     @Test
+    void clientErrorRedactsCardTokenIdsFromTheMessage() {
+        String fakeToken = "card_tok_fake_9f3a2b1c0d8e7f6a";
+        server.expect(requestTo(BASE + "/preapproval"))
+                .andRespond(withStatus(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"message\":\"Invalid card_token_id " + fakeToken + "\",\"status\":400}"));
+
+        assertThatThrownBy(() -> gateway.createRecurringCheckout(request(UUID.randomUUID(), null)))
+                .isInstanceOf(GatewayRejectedException.class)
+                .hasMessageContaining("card_token_id")
+                .hasMessageContaining("***")
+                .hasMessageNotContaining(fakeToken);
+    }
+
+    @Test
+    void redactSensitiveMasksEmailsAndCardTokens() {
+        assertThat(MercadoPagoGateway.redactSensitive(
+                "bad card_token_id=tok_abc123 for payer_email owner@test.com"))
+                .isEqualTo("bad card_token_id=*** for payer_email ***")
+                .doesNotContain("tok_abc123")
+                .doesNotContain("owner@test.com");
+    }
+
+    @Test
     void readsAndMapsAPreapproval() {
         server.expect(requestTo(BASE + "/preapproval/pre-1"))
                 .andExpect(method(HttpMethod.GET))

@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * Checkout del tenant en dos pasos: {@link #prepare} (PENDING local, sin MP) y {@link #authorize}
@@ -38,6 +39,9 @@ public class CheckoutUseCase {
     static final String GATEWAY_ERROR_MESSAGE = "No se pudo iniciar el pago con Mercado Pago";
 
     private static final Logger log = LoggerFactory.getLogger(CheckoutUseCase.class);
+    private static final Pattern EMAIL = Pattern.compile("[^\\s@\"]+@[^\\s@\"]+");
+    private static final Pattern CARD_TOKEN = Pattern.compile(
+            "(?i)(card_token(?:_id)?)([\"'\\s:=]+)([^\\s\"',};]+)");
 
     private final CheckoutTransactions transactions;
     private final GatewayOperations gatewayOperations;
@@ -64,7 +68,7 @@ public class CheckoutUseCase {
 
     /**
      * Autoriza el débito con la tarjeta tokenizada (Brick). Idempotente si el checkout ya tiene
-     * preapproval o está AUTHORIZED (200).
+     * preapproval o está AUTHORIZED (200). Rechazo 4xx → FAILED; timeout/5xx → PENDING reintentable.
      */
     public CheckoutView authorize(String tenantId, UUID checkoutId, AuthorizeCheckoutRequest request, Actor actor) {
         PaymentGateway gateway = gatewayOperations.requireGateway();
@@ -85,14 +89,20 @@ public class CheckoutUseCase {
                     checkout.getPriceAmount(), checkout.getCurrency(), checkout.getStartDate(),
                     backUrl(checkout.getId()), request.cardTokenId()));
         } catch (RuntimeException e) {
-            markFailed(checkout.getId());
-            // Nunca loguear cardTokenId. El detalle de MP (ya enmascarado) va solo al log.
-            log.warn("Checkout {}: Mercado Pago no autorizó el preapproval: {}", checkout.getId(), e.getMessage());
+            // Nunca loguear cardTokenId ni el message crudo sin enmascarar.
+            log.warn("Checkout {}: Mercado Pago no autorizó el preapproval: {}", checkout.getId(),
+                    redactForLog(e.getMessage()));
+            if (e instanceof GatewayRejectedException) {
+                markFailed(checkout.getId());
+            } else {
+                // Timeout / 5xx / error inesperado: PENDING y claim liberado para reintentar (misma idempotency key).
+                clearClaim(checkout.getId());
+            }
             throw genericGatewayError(e);
         }
 
         GatewayCheckout attached = transactions.attach(checkout.getId(), result, OffsetDateTime.now(clock));
-        if (!attached.isPending()) {
+        if (!attached.isPending() || !result.gatewaySubscriptionId().equals(attached.getGatewayPreapprovalId())) {
             gatewayOperations.cancelQuietly(result.gatewaySubscriptionId(), "checkout " + attached.getStatus());
             throw new CheckoutNotAllowedException("Otro checkout reemplazó a este mientras se autorizaba; reintentar");
         }
@@ -112,11 +122,28 @@ public class CheckoutUseCase {
         return new GatewayUnavailableException(GATEWAY_ERROR_MESSAGE);
     }
 
+    /** Enmascara emails y card_token(_id) antes de loguear mensajes de la pasarela. */
+    static String redactForLog(String message) {
+        if (message == null || message.isBlank()) {
+            return message;
+        }
+        String withoutTokens = CARD_TOKEN.matcher(message).replaceAll("$1$2***");
+        return EMAIL.matcher(withoutTokens).replaceAll("***");
+    }
+
     private void markFailed(UUID checkoutId) {
         try {
             transactions.markFailed(checkoutId, OffsetDateTime.now(clock));
         } catch (RuntimeException e) {
             log.error("No se pudo marcar FAILED el checkout {}", checkoutId, e);
+        }
+    }
+
+    private void clearClaim(UUID checkoutId) {
+        try {
+            transactions.clearAuthorizeClaim(checkoutId);
+        } catch (RuntimeException e) {
+            log.error("No se pudo liberar el claim del checkout {}", checkoutId, e);
         }
     }
 

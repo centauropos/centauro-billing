@@ -166,28 +166,36 @@ antes si tienen `preapprovalId`.
      un `gateway_checkouts` PENDING con importe, `start_date` y
      `payer_email` = `billingEmail` de la suscripción. **No llama a MP.**
    - Plan a medida → 409 `PLAN_REQUIRES_CONTACT`. Sin `billingEmail` → 400.
-   - Un PENDING vigente del mismo plan, importe y email se reutiliza (200);
-     otro distinto se marca SUPERSEDED y su preapproval (si había) se cancela.
-     Si hay un authorize en vuelo sobre el PENDING (ventana 30 s) → 409
-     `CHECKOUT_IN_PROGRESS`.
+   - Si hay un authorize en vuelo sobre el PENDING (claim firme: sin ventana
+     de tiempo) → 409 `CHECKOUT_IN_PROGRESS` (también con el mismo plan: no
+     se reutiliza).
+   - Un PENDING vigente del mismo plan, importe y email **sin** claim se
+     reutiliza (200); otro distinto se marca SUPERSEDED y su preapproval (si
+     había) se cancela.
    - 201 con `checkoutId`, `planCode`, `amount`, `currency`, `payerEmail`,
      `startDate` (`initPoint` null / omitido).
 
 2. **Authorize** — `POST /api/v1/billing/checkout/{checkoutId}/authorize
    {cardTokenId}`:
-   - Valida tenant + PENDING + no expirado. Idempotente: si ya tiene
-     preapproval o está AUTHORIZED → 200. Carrera (authorize en vuelo) → 409
+   - Valida tenant + PENDING + no expirado + `canCheckout` (suscripción
+     `FOR UPDATE`; suspensión admin u otro débito autorizado → 409).
+     Idempotente: si ya tiene preapproval o está AUTHORIZED → 200 (sin
+     revalidar `canCheckout`). Carrera (claim en vuelo) → 409
      `CHECKOUT_IN_PROGRESS`. Checkout ajeno → 404 `CHECKOUT_NOT_FOUND`.
    - Sin transacción: `POST /preapproval` without-plan-authorized
      (`status=authorized`, `card_token_id`, `payer_email` del checkout,
      `auto_recurring` como siempre, `back_url` =
      `BILLING_CHECKOUT_BACK_URL?checkout=<id>`, `external_reference` =
      checkoutId, `X-Idempotency-Key` = checkoutId). **Nunca loguear
-     `cardTokenId`.**
-   - Transacción corta: adjunta el id del preapproval (201). Si MP falla o da
-     timeout, el checkout queda FAILED. Al tenant le llega siempre "No se pudo
-     iniciar el pago con Mercado Pago" (422/502/504); el detalle de MP va solo
-     al log. Rechazo MP → `GatewayRejectedException`.
+     `cardTokenId`** ni mensajes de error sin enmascarar emails /
+     `card_token(_id)`.
+   - Transacción corta: adjunta el id del preapproval solo si sigue PENDING
+     (201); si ya no, no muta y se cancela el preapproval nuevo afuera.
+     Rechazo 4xx (`GatewayRejectedException`) → checkout FAILED. Timeout o
+     5xx (`GatewayTimeout` / `GatewayUnavailable`) → deja PENDING y libera
+     el claim para reintentar con la misma idempotency key. Al tenant le
+     llega siempre "No se pudo iniciar el pago con Mercado Pago"
+     (422/502/504); el detalle de MP (enmascarado) va solo al log.
 
 `start_date` es el fin del trial vigente o del período pago en curso, así no se
 cobra dos veces el mismo tiempo. `back_url` hace falta en **authorize** (sin

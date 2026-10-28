@@ -25,7 +25,6 @@ import com.centauro.billing.domain.vo.RecurringCheckoutResult;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
@@ -43,7 +42,6 @@ public class CheckoutTransactions {
     private final CheckoutRepositoryPort checkouts;
     private final AccessPolicy accessPolicy;
     private final AllowedActionsPolicy allowedActionsPolicy;
-    static final Duration IN_PROGRESS_WINDOW = Duration.ofSeconds(30);
 
     private final GatewaySettings settings;
 
@@ -96,11 +94,12 @@ public class CheckoutTransactions {
         Optional<GatewayCheckout> pending = checkouts.findPendingBySubscriptionId(subscription.getId());
         if (pending.isPresent()) {
             GatewayCheckout current = pending.get();
+            // Authorize en vuelo (mismo plan u otro): no reutilizar ni reemplazar.
+            if (isAuthorizeInProgress(current)) {
+                throw new CheckoutInProgressException();
+            }
             if (current.isUsable(now) && current.matches(plan.getId(), price.amount(), email)) {
                 return new Prepared(current, plan, true, null);
-            }
-            if (isAuthorizeInProgress(current, now)) {
-                throw new CheckoutInProgressException();
             }
             if (current.isExpired(now)) {
                 current.markExpired(now);
@@ -116,8 +115,8 @@ public class CheckoutTransactions {
     }
 
     /**
-     * Valida tenant + PENDING + no expirado (o idempotencia). Marca el intento para detectar carreras
-     * concurrentes hacia MP ({@link #isAuthorizeInProgress}).
+     * Valida tenant + PENDING + no expirado + {@code canCheckout} (o idempotencia). Marca el claim firme
+     * hasta attach / FAILED / {@link #clearAuthorizeClaim}.
      */
     @Transactional
     public AuthorizeClaim claimForAuthorize(String tenantId, UUID checkoutId, OffsetDateTime now) {
@@ -130,13 +129,22 @@ public class CheckoutTransactions {
                 || (checkout.isPending() && checkout.getGatewayPreapprovalId() != null)) {
             return new AuthorizeClaim(checkout, plan, true);
         }
+        Subscription subscription = subscriptions.findByTenantIdForUpdate(tenantId)
+                .filter(s -> s.getId().equals(checkout.getSubscriptionId()))
+                .orElseThrow(() -> new SubscriptionNotFoundException(tenantId));
+        AccessDecision decision = accessPolicy.evaluate(subscription, now);
+        if (!allowedActionsPolicy.canCheckout(subscription, decision)) {
+            throw new CheckoutNotAllowedException(subscription.isAdminSuspended()
+                    ? "La suscripción está suspendida por la plataforma"
+                    : "La suscripción ya tiene un débito automático autorizado");
+        }
         if (!checkout.isPending()) {
             throw new CheckoutNotAllowedException("El checkout no está pendiente de autorización");
         }
         if (checkout.isExpired(now)) {
             throw new CheckoutNotAllowedException("El checkout expiró");
         }
-        if (isAuthorizeInProgress(checkout, now)) {
+        if (isAuthorizeInProgress(checkout)) {
             throw new CheckoutInProgressException();
         }
         checkout.markAuthorizeAttempted(now);
@@ -144,21 +152,26 @@ public class CheckoutTransactions {
     }
 
     /**
-     * Authorize en vuelo: PENDING sin preapproval, con {@code updatedAt} posterior a la creación y dentro
-     * de la ventana (doble click o prepare que intenta reemplazar mientras MP responde).
+     * Authorize en vuelo: PENDING sin preapproval y {@code updatedAt} posterior a la creación.
+     * Claim firme (sin ventana temporal) hasta attach, FAILED o clear tras timeout/5xx.
      */
-    static boolean isAuthorizeInProgress(GatewayCheckout checkout, OffsetDateTime now) {
+    public static boolean isAuthorizeInProgress(GatewayCheckout checkout) {
         return checkout.isPending() && checkout.getGatewayPreapprovalId() == null
                 && checkout.getUpdatedAt() != null && checkout.getCreatedAt() != null
-                && checkout.getUpdatedAt().isAfter(checkout.getCreatedAt())
-                && checkout.getUpdatedAt().isAfter(now.minus(IN_PROGRESS_WINDOW));
+                && checkout.getUpdatedAt().isAfter(checkout.getCreatedAt());
     }
 
-    /** Devuelve el checkout tal como quedó: si ya no está PENDING, otro pedido lo reemplazó mientras tanto. */
+    /**
+     * Adjunta el preapproval solo si el checkout sigue PENDING. Si ya no lo está, no muta (el caller
+     * cancela el preapproval nuevo fuera de la transacción).
+     */
     @Transactional
     public GatewayCheckout attach(UUID checkoutId, RecurringCheckoutResult result, OffsetDateTime now) {
         GatewayCheckout checkout = checkouts.findByIdForUpdate(checkoutId)
                 .orElseThrow(() -> new IllegalStateException("Checkout inexistente: " + checkoutId));
+        if (!checkout.isPending()) {
+            return checkout;
+        }
         checkout.attachGateway(result.gatewaySubscriptionId(), result.initPoint(), now);
         return checkouts.save(checkout);
     }
@@ -169,6 +182,20 @@ public class CheckoutTransactions {
             checkout.markFailed(now);
             checkouts.save(checkout);
         });
+    }
+
+    /**
+     * Tras timeout o 5xx: deja PENDING y libera el claim para reintentar con la misma idempotency key.
+     */
+    @Transactional
+    public void clearAuthorizeClaim(UUID checkoutId) {
+        checkouts.findByIdForUpdate(checkoutId)
+                .filter(GatewayCheckout::isPending)
+                .filter(c -> c.getGatewayPreapprovalId() == null)
+                .ifPresent(checkout -> {
+                    checkout.clearAuthorizeClaim();
+                    checkouts.save(checkout);
+                });
     }
 
     /**
