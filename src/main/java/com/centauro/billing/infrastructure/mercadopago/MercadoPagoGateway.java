@@ -80,12 +80,16 @@ public class MercadoPagoGateway implements PaymentGateway {
 
     @Override
     public RecurringCheckoutResult createRecurringCheckout(RecurringCheckoutRequest request) {
+        if (isBlank(request.cardTokenId())) {
+            throw new GatewayRejectedException("Falta card_token_id para autorizar el preapproval");
+        }
         String checkoutId = request.checkoutId().toString();
+        // Without-plan-authorized: status authorized + card_token_id. Nunca loguear el token.
         MpPreapprovalRequest body = new MpPreapprovalRequest(request.reason(), checkoutId, request.payerEmail(),
-                request.backUrl(), notificationUrl,
+                request.cardTokenId(), request.backUrl(), notificationUrl,
                 new MpPreapprovalRequest.AutoRecurring(1, "months", format(request.startDate()),
                         Amounts.scale(request.amount()), request.currency()),
-                "pending");
+                AUTHORIZED_STATUS);
         MpPreapproval created = call("la creación del preapproval", false, () -> client.post()
                 .uri("/preapproval")
                 .header(IDEMPOTENCY_HEADER, checkoutId)
@@ -93,10 +97,10 @@ public class MercadoPagoGateway implements PaymentGateway {
                 .body(body)
                 .retrieve()
                 .body(MpPreapproval.class));
-        if (created == null || isBlank(created.id()) || isBlank(created.initPoint())) {
-            throw new GatewayUnavailableException("Mercado Pago devolvió un preapproval sin id o sin init_point");
+        if (created == null || isBlank(created.id())) {
+            throw new GatewayUnavailableException("Mercado Pago devolvió un preapproval sin id");
         }
-        log.info("Mercado Pago: preapproval {} creado para el checkout {}", created.id(), checkoutId);
+        log.info("Mercado Pago: preapproval {} autorizado para el checkout {}", created.id(), checkoutId);
         return new RecurringCheckoutResult(created.id(), created.initPoint(), created.status());
     }
 

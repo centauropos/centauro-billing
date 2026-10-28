@@ -24,11 +24,11 @@ import java.util.UUID;
 
 /**
  * Vence los checkouts PENDING con {@code expires_at <= now} (lock {@code 1002}; cursor por id como
- * {@link SubscriptionLifecycleJob}). Después reconsulta el preapproval en la pasarela:
+ * {@link SubscriptionLifecycleJob}). Si no hay {@code preapprovalId} (prepare sin authorize), solo marca
+ * EXPIRED. Si hay preapproval (legacy pending/init_point o authorize que no llegó el webhook):
  * <ul>
- *   <li>autorizado (el pagador terminó justo antes de vencer y el webhook todavía no llegó): se aplica con el flujo
- *       normal de {@link GatewaySyncService}, que lo vincula o lo descarta;</li>
- *   <li>vinculado a la suscripción: no se toca;</li>
+ *   <li>autorizado: se aplica con el flujo normal de {@link GatewaySyncService};</li>
+ *   <li>vinculado a la suscripción (AUTHORIZED): no se cancela;</li>
  *   <li>cualquier otro estado vivo: se cancela (best effort).</li>
  * </ul>
  * Si la reconsulta falla no se cancela nada: lo retoma la conciliación.

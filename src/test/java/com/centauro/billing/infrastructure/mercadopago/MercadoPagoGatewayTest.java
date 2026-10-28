@@ -56,11 +56,12 @@ class MercadoPagoGatewayTest {
 
     private static RecurringCheckoutRequest request(UUID checkoutId, OffsetDateTime startDate) {
         return new RecurringCheckoutRequest(checkoutId, "owner@test.com", "Centauro - plan Profesional",
-                new BigDecimal("59900"), "ARS", startDate, "https://app.test/billing?checkout=" + checkoutId);
+                new BigDecimal("59900"), "ARS", startDate, "https://app.test/billing?checkout=" + checkoutId,
+                "card-tok-xyz");
     }
 
     @Test
-    void createsAPreapprovalWithoutPlanInArsWithIdempotencyKey() {
+    void createsAnAuthorizedPreapprovalWithCardTokenAndIdempotencyKey() {
         UUID checkoutId = UUID.randomUUID();
         OffsetDateTime start = OffsetDateTime.of(2026, 10, 25, 10, 0, 0, 0, ZoneOffset.ofHours(-3));
         server.expect(requestTo(BASE + "/preapproval"))
@@ -68,7 +69,8 @@ class MercadoPagoGatewayTest {
                 .andExpect(header(MercadoPagoGateway.IDEMPOTENCY_HEADER, checkoutId.toString()))
                 .andExpect(jsonPath("$.external_reference").value(checkoutId.toString()))
                 .andExpect(jsonPath("$.payer_email").value("owner@test.com"))
-                .andExpect(jsonPath("$.status").value("pending"))
+                .andExpect(jsonPath("$.status").value("authorized"))
+                .andExpect(jsonPath("$.card_token_id").value("card-tok-xyz"))
                 .andExpect(jsonPath("$.back_url").value("https://app.test/billing?checkout=" + checkoutId))
                 .andExpect(jsonPath("$.notification_url").value(NOTIFICATION_URL))
                 .andExpect(jsonPath("$.preapproval_plan_id").doesNotExist())
@@ -77,35 +79,47 @@ class MercadoPagoGatewayTest {
                 .andExpect(jsonPath("$.auto_recurring.transaction_amount").value(59900.0))
                 .andExpect(jsonPath("$.auto_recurring.currency_id").value("ARS"))
                 .andExpect(jsonPath("$.auto_recurring.start_date").value("2026-10-25T13:00:00.000Z"))
-                .andRespond(withSuccess("{\"id\":\"pre-1\",\"init_point\":\"https://mp.test/init/pre-1\","
-                        + "\"status\":\"pending\"}", MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess("{\"id\":\"pre-1\",\"status\":\"authorized\"}", MediaType.APPLICATION_JSON));
 
         RecurringCheckoutResult result = gateway.createRecurringCheckout(request(checkoutId, start));
 
         assertThat(result.gatewaySubscriptionId()).isEqualTo("pre-1");
-        assertThat(result.initPoint()).isEqualTo("https://mp.test/init/pre-1");
+        assertThat(result.initPoint()).isNull();
+        assertThat(result.status()).isEqualTo("authorized");
         server.verify();
     }
 
     @Test
-    void withoutStartDateTheFieldIsOmitted() {
+    void withoutStartDateTheFieldIsOmittedAndInitPointMayBeAbsent() {
         server.expect(requestTo(BASE + "/preapproval"))
                 .andExpect(jsonPath("$.auto_recurring.start_date").doesNotExist())
-                .andRespond(withSuccess("{\"id\":\"pre-1\",\"init_point\":\"https://mp.test/init\"}",
-                        MediaType.APPLICATION_JSON));
+                .andExpect(jsonPath("$.status").value("authorized"))
+                .andExpect(jsonPath("$.card_token_id").value("card-tok-xyz"))
+                .andRespond(withSuccess("{\"id\":\"pre-1\",\"status\":\"authorized\"}", MediaType.APPLICATION_JSON));
 
-        gateway.createRecurringCheckout(request(UUID.randomUUID(), null));
+        RecurringCheckoutResult result = gateway.createRecurringCheckout(request(UUID.randomUUID(), null));
 
+        assertThat(result.initPoint()).isNull();
         server.verify();
     }
 
     @Test
-    void preapprovalWithoutInitPointIsAnError() {
+    void preapprovalWithoutIdIsAnError() {
         server.expect(requestTo(BASE + "/preapproval"))
-                .andRespond(withSuccess("{\"id\":\"pre-1\"}", MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess("{\"status\":\"authorized\"}", MediaType.APPLICATION_JSON));
 
         assertThatThrownBy(() -> gateway.createRecurringCheckout(request(UUID.randomUUID(), null)))
                 .isInstanceOf(GatewayUnavailableException.class);
+    }
+
+    @Test
+    void missingCardTokenIsRejectedWithoutCallingMercadoPago() {
+        RecurringCheckoutRequest noToken = new RecurringCheckoutRequest(UUID.randomUUID(), "owner@test.com",
+                "Centauro", new BigDecimal("59900"), "ARS", null, "https://app.test/billing", null);
+
+        assertThatThrownBy(() -> gateway.createRecurringCheckout(noToken))
+                .isInstanceOf(GatewayRejectedException.class);
+        server.verify();
     }
 
     @Test

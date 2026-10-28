@@ -4,7 +4,10 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
-/** {@code payerEmail} opcional: si falta, se usa el email de facturación de la suscripción. */
+/**
+ * Prepare del checkout. Solo {@code planCode} importa: el email hacia MP sale siempre del
+ * {@code billingEmail} de la suscripción. {@code payerEmail} está deprecado y se ignora.
+ */
 public record CheckoutRequest(
         @NotBlank @Size(max = 40) String planCode,
         @Email @Size(max = 255) String payerEmail

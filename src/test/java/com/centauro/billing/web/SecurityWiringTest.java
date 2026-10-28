@@ -259,6 +259,21 @@ class SecurityWiringTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void authorizeRequiresToken() throws Exception {
+        mvc.perform(post("/api/v1/billing/checkout/11111111-1111-1111-1111-111111111111/authorize")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"cardTokenId\":\"tok\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void authorizeRequiresBillingManage() throws Exception {
+        mvc.perform(post("/api/v1/billing/checkout/11111111-1111-1111-1111-111111111111/authorize")
+                        .header("Authorization", bearer(List.of(), "USER"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"cardTokenId\":\"tok\"}"))
+                .andExpect(status().isForbidden());
+    }
+
     private static String hmac(String manifest) throws Exception {
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(WEBHOOK_SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));

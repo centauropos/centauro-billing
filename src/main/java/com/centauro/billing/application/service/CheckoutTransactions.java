@@ -1,8 +1,10 @@
 package com.centauro.billing.application.service;
 
+import com.centauro.billing.domain.enums.CheckoutStatus;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
 import com.centauro.billing.domain.exception.CheckoutInProgressException;
 import com.centauro.billing.domain.exception.CheckoutNotAllowedException;
+import com.centauro.billing.domain.exception.CheckoutNotFoundException;
 import com.centauro.billing.domain.exception.CheckoutPlanRequiresContactException;
 import com.centauro.billing.domain.exception.InvalidBillingRequestException;
 import com.centauro.billing.domain.exception.PlanNotFoundException;
@@ -29,9 +31,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Las transacciones cortas del checkout. La llamada a la pasarela queda entre {@link #prepare} y
- * {@link #attach}, fuera de toda transacción: el checkout se persiste antes de pedir el preapproval, así un
- * preapproval creado por un POST que dio timeout igual encuentra su checkout por {@code external_reference}.
+ * Transacciones cortas del checkout. {@link #prepare} solo persiste el PENDING (sin pasarela).
+ * {@link #claimForAuthorize} valida y marca el intento; la llamada a MP queda entre claim y
+ * {@link #attach}, fuera de transacción.
  */
 @Component
 public class CheckoutTransactions {
@@ -60,8 +62,15 @@ public class CheckoutTransactions {
     public record Prepared(GatewayCheckout checkout, Plan plan, boolean reused, String supersededPreapprovalId) {
     }
 
+    /**
+     * Claim del authorize: {@code alreadyDone} si el checkout ya tiene preapproval o está AUTHORIZED
+     * (idempotencia → 200).
+     */
+    public record AuthorizeClaim(GatewayCheckout checkout, Plan plan, boolean alreadyDone) {
+    }
+
     @Transactional
-    public Prepared prepare(String tenantId, String planCode, String payerEmail, Actor actor, OffsetDateTime now) {
+    public Prepared prepare(String tenantId, String planCode, Actor actor, OffsetDateTime now) {
         Subscription subscription = subscriptions.findByTenantIdForUpdate(tenantId)
                 .orElseThrow(() -> new SubscriptionNotFoundException(tenantId));
         Plan plan = plans.findByCode(planCode)
@@ -77,21 +86,21 @@ public class CheckoutTransactions {
                     ? "La suscripción está suspendida por la plataforma"
                     : "La suscripción ya tiene un débito automático autorizado");
         }
-        String email = payerEmail != null && !payerEmail.isBlank() ? payerEmail.trim() : subscription.getBillingEmail();
+        String email = subscription.getBillingEmail();
         if (email == null || email.isBlank()) {
             throw new InvalidBillingRequestException(
-                    "La suscripción no tiene email de facturación: indicar payerEmail");
+                    "La suscripción no tiene email de facturación");
         }
 
         String superseded = null;
         Optional<GatewayCheckout> pending = checkouts.findPendingBySubscriptionId(subscription.getId());
         if (pending.isPresent()) {
             GatewayCheckout current = pending.get();
-            if (isInProgress(current, plan, now)) {
-                throw new CheckoutInProgressException();
-            }
             if (current.isUsable(now) && current.matches(plan.getId(), price.amount(), email)) {
                 return new Prepared(current, plan, true, null);
+            }
+            if (isAuthorizeInProgress(current, now)) {
+                throw new CheckoutInProgressException();
             }
             if (current.isExpired(now)) {
                 current.markExpired(now);
@@ -107,12 +116,42 @@ public class CheckoutTransactions {
     }
 
     /**
-     * Doble click: un PENDING del mismo plan, todavía sin {@code init_point} y creado hace menos de
-     * {@link #IN_PROGRESS_WINDOW}, es otro pedido que está llamando a MP. No se reemplaza: 409.
+     * Valida tenant + PENDING + no expirado (o idempotencia). Marca el intento para detectar carreras
+     * concurrentes hacia MP ({@link #isAuthorizeInProgress}).
      */
-    private static boolean isInProgress(GatewayCheckout pending, Plan plan, OffsetDateTime now) {
-        return pending.getInitPoint() == null && pending.getPlanId().equals(plan.getId())
-                && pending.getCreatedAt() != null && pending.getCreatedAt().isAfter(now.minus(IN_PROGRESS_WINDOW));
+    @Transactional
+    public AuthorizeClaim claimForAuthorize(String tenantId, UUID checkoutId, OffsetDateTime now) {
+        GatewayCheckout checkout = checkouts.findByIdForUpdate(checkoutId)
+                .filter(c -> tenantId.equals(c.getTenantId()))
+                .orElseThrow(() -> new CheckoutNotFoundException(checkoutId));
+        Plan plan = plans.findById(checkout.getPlanId())
+                .orElseThrow(() -> new PlanNotFoundException(checkout.getPlanId().toString()));
+        if (checkout.getStatus() == CheckoutStatus.AUTHORIZED
+                || (checkout.isPending() && checkout.getGatewayPreapprovalId() != null)) {
+            return new AuthorizeClaim(checkout, plan, true);
+        }
+        if (!checkout.isPending()) {
+            throw new CheckoutNotAllowedException("El checkout no está pendiente de autorización");
+        }
+        if (checkout.isExpired(now)) {
+            throw new CheckoutNotAllowedException("El checkout expiró");
+        }
+        if (isAuthorizeInProgress(checkout, now)) {
+            throw new CheckoutInProgressException();
+        }
+        checkout.markAuthorizeAttempted(now);
+        return new AuthorizeClaim(checkouts.save(checkout), plan, false);
+    }
+
+    /**
+     * Authorize en vuelo: PENDING sin preapproval, con {@code updatedAt} posterior a la creación y dentro
+     * de la ventana (doble click o prepare que intenta reemplazar mientras MP responde).
+     */
+    static boolean isAuthorizeInProgress(GatewayCheckout checkout, OffsetDateTime now) {
+        return checkout.isPending() && checkout.getGatewayPreapprovalId() == null
+                && checkout.getUpdatedAt() != null && checkout.getCreatedAt() != null
+                && checkout.getUpdatedAt().isAfter(checkout.getCreatedAt())
+                && checkout.getUpdatedAt().isAfter(now.minus(IN_PROGRESS_WINDOW));
     }
 
     /** Devuelve el checkout tal como quedó: si ya no está PENDING, otro pedido lo reemplazó mientras tanto. */
@@ -134,7 +173,7 @@ public class CheckoutTransactions {
 
     /**
      * Primer cobro: al fin del trial vigente o del período pago en curso, así no se cobra dos veces el mismo
-     * tiempo. En cualquier otro caso se omite y MP cobra al autorizar.
+     * tiempo. En cualquier otro caso se omite y MP cobra según su calendario (~1 h tras autorizar).
      */
     static OffsetDateTime startDate(Subscription subscription, AccessDecision decision, OffsetDateTime now) {
         SubscriptionStatus status = decision.effectiveStatus();

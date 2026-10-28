@@ -72,15 +72,23 @@ public class GatewayCheckout {
         return !expiresAt.isAfter(now);
     }
 
-    /** PENDING, vigente y con link de pago: se le puede volver a mostrar al tenant. */
+    /** PENDING y vigente: el tenant puede seguir con el Brick o ver un {@code initPoint} legacy. */
     public boolean isUsable(OffsetDateTime now) {
-        return isPending() && !isExpired(now) && initPoint != null && gatewayPreapprovalId != null;
+        return isPending() && !isExpired(now);
     }
 
     /** Mismo plan, mismo importe y mismo pagador: el checkout pendiente se reutiliza en vez de crear otro. */
     public boolean matches(UUID otherPlanId, BigDecimal amount, String email) {
         return planId.equals(otherPlanId) && priceAmount.compareTo(Amounts.scale(amount)) == 0
                 && payerEmail.equalsIgnoreCase(email);
+    }
+
+    /**
+     * Marca el intento de authorize (bump de {@code updatedAt}) para detectar carreras: otro authorize
+     * concurrente ve PENDING sin preapproval y {@code updatedAt > createdAt} dentro de la ventana.
+     */
+    public void markAuthorizeAttempted(OffsetDateTime now) {
+        this.updatedAt = now;
     }
 
     public void attachGateway(String preapprovalId, String link, OffsetDateTime now) {

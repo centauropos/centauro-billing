@@ -1,5 +1,6 @@
 package com.centauro.billing.application.usecase;
 
+import com.centauro.billing.application.dto.AuthorizeCheckoutRequest;
 import com.centauro.billing.application.dto.CheckoutRequest;
 import com.centauro.billing.application.dto.CheckoutView;
 import com.centauro.billing.application.service.CheckoutTransactions;
@@ -27,11 +28,9 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 /**
- * Checkout del tenant: adhesión al débito automático con un preapproval sin plan. Nunca activa nada: la
+ * Checkout del tenant en dos pasos: {@link #prepare} (PENDING local, sin MP) y {@link #authorize}
+ * (preapproval without-plan-authorized con {@code card_token_id}). Nunca activa el período: la
  * suscripción solo se activa o renueva con un cobro aprobado y reconsultado (webhook o conciliación).
- *
- * <p>Sin transacción propia: persiste el checkout, llama a la pasarela y guarda el resultado en pasos
- * separados ({@link CheckoutTransactions}).
  */
 @Service
 public class CheckoutUseCase {
@@ -55,41 +54,51 @@ public class CheckoutUseCase {
         this.clock = clock;
     }
 
-    public CheckoutView start(String tenantId, CheckoutRequest request, Actor actor) {
+    /** Prepara un checkout PENDING. No llama a la pasarela. {@code payerEmail} del request se ignora. */
+    public CheckoutView prepare(String tenantId, CheckoutRequest request, Actor actor) {
+        OffsetDateTime now = OffsetDateTime.now(clock);
+        CheckoutTransactions.Prepared prepared = transactions.prepare(tenantId, request.planCode(), actor, now);
+        gatewayOperations.cancelQuietly(prepared.supersededPreapprovalId(), "checkout reemplazado");
+        return view(prepared.checkout(), prepared.plan(), prepared.reused());
+    }
+
+    /**
+     * Autoriza el débito con la tarjeta tokenizada (Brick). Idempotente si el checkout ya tiene
+     * preapproval o está AUTHORIZED (200).
+     */
+    public CheckoutView authorize(String tenantId, UUID checkoutId, AuthorizeCheckoutRequest request, Actor actor) {
         PaymentGateway gateway = gatewayOperations.requireGateway();
         if (!settings.hasBackUrl()) {
             throw new GatewayUnavailableException("Falta configurar BILLING_CHECKOUT_BACK_URL");
         }
         OffsetDateTime now = OffsetDateTime.now(clock);
-        CheckoutTransactions.Prepared prepared = transactions.prepare(tenantId, request.planCode(),
-                request.payerEmail(), actor, now);
-        gatewayOperations.cancelQuietly(prepared.supersededPreapprovalId(), "checkout reemplazado");
-        if (prepared.reused()) {
-            return view(prepared.checkout(), prepared.plan(), true);
+        CheckoutTransactions.AuthorizeClaim claim = transactions.claimForAuthorize(tenantId, checkoutId, now);
+        if (claim.alreadyDone()) {
+            return view(claim.checkout(), claim.plan(), true);
         }
 
-        GatewayCheckout checkout = prepared.checkout();
+        GatewayCheckout checkout = claim.checkout();
         RecurringCheckoutResult result;
         try {
             result = gateway.createRecurringCheckout(new RecurringCheckoutRequest(checkout.getId(),
-                    checkout.getPayerEmail(), "Centauro - plan " + prepared.plan().getName(),
+                    checkout.getPayerEmail(), "Centauro - plan " + claim.plan().getName(),
                     checkout.getPriceAmount(), checkout.getCurrency(), checkout.getStartDate(),
-                    backUrl(checkout.getId())));
+                    backUrl(checkout.getId()), request.cardTokenId()));
         } catch (RuntimeException e) {
             markFailed(checkout.getId());
-            // El detalle de MP (ya enmascarado por el adaptador) va solo al log; al tenant, un mensaje genérico.
-            log.warn("Checkout {}: Mercado Pago no creó el preapproval: {}", checkout.getId(), e.getMessage());
+            // Nunca loguear cardTokenId. El detalle de MP (ya enmascarado) va solo al log.
+            log.warn("Checkout {}: Mercado Pago no autorizó el preapproval: {}", checkout.getId(), e.getMessage());
             throw genericGatewayError(e);
         }
 
         GatewayCheckout attached = transactions.attach(checkout.getId(), result, OffsetDateTime.now(clock));
         if (!attached.isPending()) {
             gatewayOperations.cancelQuietly(result.gatewaySubscriptionId(), "checkout " + attached.getStatus());
-            throw new CheckoutNotAllowedException("Otro checkout reemplazó a este mientras se creaba; reintentar");
+            throw new CheckoutNotAllowedException("Otro checkout reemplazó a este mientras se autorizaba; reintentar");
         }
-        log.info("Checkout {} creado para el tenant {} (preapproval {}) por {}", attached.getId(), tenantId,
+        log.info("Checkout {} autorizado para el tenant {} (preapproval {}) por {}", attached.getId(), tenantId,
                 result.gatewaySubscriptionId(), actor.logId());
-        return view(attached, prepared.plan(), false);
+        return view(attached, claim.plan(), false);
     }
 
     /** Conserva el tipo (422, 502 o 504) y reemplaza el mensaje. */
@@ -119,6 +128,6 @@ public class CheckoutUseCase {
     private CheckoutView view(GatewayCheckout checkout, Plan plan, boolean reused) {
         return new CheckoutView(checkout.getId(), checkout.getInitPoint(), assembler.local(checkout.getExpiresAt()),
                 assembler.local(checkout.getStartDate()), Amounts.format(checkout.getPriceAmount()),
-                checkout.getCurrency(), plan.getCode(), reused);
+                checkout.getCurrency(), plan.getCode(), checkout.getPayerEmail(), reused);
     }
 }

@@ -1,5 +1,6 @@
 package com.centauro.billing.application.usecase;
 
+import com.centauro.billing.application.dto.AuthorizeCheckoutRequest;
 import com.centauro.billing.application.dto.CheckoutRequest;
 import com.centauro.billing.application.dto.CheckoutView;
 import com.centauro.billing.application.dto.TenantSubscriptionView;
@@ -8,6 +9,7 @@ import com.centauro.billing.domain.enums.SubscriptionStatus;
 import com.centauro.billing.domain.enums.SuspensionReason;
 import com.centauro.billing.domain.exception.CheckoutInProgressException;
 import com.centauro.billing.domain.exception.CheckoutNotAllowedException;
+import com.centauro.billing.domain.exception.CheckoutNotFoundException;
 import com.centauro.billing.domain.exception.CheckoutPlanRequiresContactException;
 import com.centauro.billing.domain.exception.GatewayRejectedException;
 import com.centauro.billing.domain.exception.GatewayTimeoutException;
@@ -25,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.UUID;
 
 import static com.centauro.billing.support.TestFixtures.NOW;
 import static com.centauro.billing.support.TestFixtures.customPlan;
@@ -36,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class CheckoutUseCaseTest {
 
     private static final Actor OWNER = Actor.tenantUser("owner", "7");
+    private static final AuthorizeCheckoutRequest TOKEN = new AuthorizeCheckoutRequest("card-tok-1");
 
     private GatewayHarness h;
     private Plan pro;
@@ -50,27 +54,90 @@ class CheckoutUseCaseTest {
         h.plans.put(customPlan("EMPRESA", true));
     }
 
-    private CheckoutView start(String planCode) {
-        return h.checkoutUseCase.start("tenant-1", new CheckoutRequest(planCode, null), OWNER);
+    private CheckoutView prepare(String planCode) {
+        return h.checkoutUseCase.prepare("tenant-1", new CheckoutRequest(planCode, null), OWNER);
+    }
+
+    private CheckoutView authorize(UUID checkoutId) {
+        return h.checkoutUseCase.authorize("tenant-1", checkoutId, TOKEN, OWNER);
     }
 
     @Test
-    void createsPreapprovalStartingWhenTheTrialEnds() {
+    void prepareCreatesPendingCheckoutWithoutCallingTheGateway() {
         Subscription s = h.store(subscription().planId(pro.getId()).build());
 
-        CheckoutView view = start("PROFESIONAL");
+        CheckoutView view = prepare("PROFESIONAL");
 
         assertThat(view.reused()).isFalse();
-        assertThat(view.initPoint()).isEqualTo("https://mp.test/checkout/pre-1");
+        assertThat(view.initPoint()).isNull();
         assertThat(view.amount()).isEqualTo("59900.00");
         assertThat(view.currency()).isEqualTo("ARS");
+        assertThat(view.planCode()).isEqualTo("PROFESIONAL");
+        assertThat(view.payerEmail()).isEqualTo("owner@test.com");
+        assertThat(view.startDate()).isEqualTo(s.getTrialEndsAt());
+        assertThat(h.gateway.created).isEmpty();
+        GatewayCheckout stored = h.checkouts.findById(view.checkoutId()).orElseThrow();
+        assertThat(stored.getStatus()).isEqualTo(CheckoutStatus.PENDING);
+        assertThat(stored.getGatewayPreapprovalId()).isNull();
+        assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.TRIALING);
+    }
+
+    @Test
+    void prepareIgnoresClientPayerEmailAndUsesBillingEmail() {
+        h.store(subscription().planId(pro.getId()).billingEmail("billing@tenant.com").build());
+
+        CheckoutView view = h.checkoutUseCase.prepare("tenant-1",
+                new CheckoutRequest("PROFESIONAL", "other@client.com"), OWNER);
+
+        assertThat(view.payerEmail()).isEqualTo("billing@tenant.com");
+        assertThat(h.checkouts.findById(view.checkoutId()).orElseThrow().getPayerEmail())
+                .isEqualTo("billing@tenant.com");
+    }
+
+    @Test
+    void pendingCheckoutForSamePlanAndAmountIsReusedWithoutGateway() {
+        h.store(subscription().planId(pro.getId()).build());
+
+        CheckoutView first = prepare("PROFESIONAL");
+        CheckoutView second = prepare("PROFESIONAL");
+
+        assertThat(second.reused()).isTrue();
+        assertThat(second.checkoutId()).isEqualTo(first.checkoutId());
+        assertThat(h.gateway.created).isEmpty();
+        assertThat(h.checkouts.all()).hasSize(1);
+    }
+
+    @Test
+    void prepareForAnotherPlanSupersedesThePendingOne() {
+        h.store(subscription().planId(pro.getId()).build());
+
+        CheckoutView first = prepare("PROFESIONAL");
+        CheckoutView second = prepare("INICIAL");
+
+        assertThat(second.reused()).isFalse();
+        assertThat(h.checkouts.findById(first.checkoutId()).orElseThrow().getStatus())
+                .isEqualTo(CheckoutStatus.SUPERSEDED);
+        assertThat(h.checkouts.findById(second.checkoutId()).orElseThrow().getPlanId()).isEqualTo(inicial.getId());
+        assertThat(h.gateway.created).isEmpty();
+    }
+
+    @Test
+    void authorizeCreatesAuthorizedPreapprovalWithCardToken() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        CheckoutView prepared = prepare("PROFESIONAL");
+
+        CheckoutView view = authorize(prepared.checkoutId());
+
+        assertThat(view.reused()).isFalse();
+        assertThat(view.initPoint()).isNull();
         assertThat(h.gateway.created).hasSize(1);
         RecurringCheckoutRequest sent = h.gateway.created.get(0);
-        assertThat(sent.checkoutId()).isEqualTo(view.checkoutId());
+        assertThat(sent.checkoutId()).isEqualTo(prepared.checkoutId());
+        assertThat(sent.cardTokenId()).isEqualTo("card-tok-1");
         assertThat(sent.payerEmail()).isEqualTo("owner@test.com");
         assertThat(sent.amount()).isEqualByComparingTo("59900");
         assertThat(sent.startDate()).isEqualTo(s.getTrialEndsAt());
-        assertThat(sent.backUrl()).isEqualTo(GatewayHarness.BACK_URL + "?checkout=" + view.checkoutId());
+        assertThat(sent.backUrl()).isEqualTo(GatewayHarness.BACK_URL + "?checkout=" + prepared.checkoutId());
         GatewayCheckout stored = h.checkouts.findById(view.checkoutId()).orElseThrow();
         assertThat(stored.getStatus()).isEqualTo(CheckoutStatus.PENDING);
         assertThat(stored.getGatewayPreapprovalId()).isEqualTo("pre-1");
@@ -78,84 +145,96 @@ class CheckoutUseCaseTest {
     }
 
     @Test
-    void pendingCheckoutForSamePlanAndAmountIsReused() {
+    void authorizeIsIdempotentWhenPreapprovalAlreadyAttached() {
         h.store(subscription().planId(pro.getId()).build());
+        CheckoutView prepared = prepare("PROFESIONAL");
+        CheckoutView first = authorize(prepared.checkoutId());
 
-        CheckoutView first = start("PROFESIONAL");
-        CheckoutView second = start("PROFESIONAL");
+        CheckoutView second = authorize(prepared.checkoutId());
 
         assertThat(second.reused()).isTrue();
         assertThat(second.checkoutId()).isEqualTo(first.checkoutId());
-        assertThat(second.initPoint()).isEqualTo(first.initPoint());
         assertThat(h.gateway.created).hasSize(1);
     }
 
     @Test
-    void checkoutForAnotherPlanSupersedesThePendingOneAndCancelsItsPreapproval() {
+    void authorizeRaceWhileFirstIsInFlightIsAConflict() {
         h.store(subscription().planId(pro.getId()).build());
+        CheckoutView prepared = prepare("PROFESIONAL");
+        // Simula el claim del primer authorize (updatedAt > createdAt, sin preapproval).
+        GatewayCheckout inFlight = h.checkouts.findById(prepared.checkoutId()).orElseThrow();
+        inFlight.markAuthorizeAttempted(NOW.plusSeconds(1));
+        h.checkouts.save(inFlight);
 
-        CheckoutView first = start("PROFESIONAL");
-        CheckoutView second = start("INICIAL");
-
-        assertThat(second.reused()).isFalse();
-        assertThat(h.checkouts.findById(first.checkoutId()).orElseThrow().getStatus())
-                .isEqualTo(CheckoutStatus.SUPERSEDED);
-        assertThat(h.gateway.canceled).containsExactly("pre-1");
-        assertThat(h.checkouts.findById(second.checkoutId()).orElseThrow().getPlanId()).isEqualTo(inicial.getId());
-    }
-
-    @Test
-    void doubleClickWhileTheFirstCheckoutIsBeingCreatedIsAConflict() {
-        Subscription s = h.store(subscription().planId(pro.getId()).build());
-        // El primer pedido ya guardó el checkout PENDING pero todavía no volvió de MP (sin init_point).
-        GatewayCheckout inFlight = h.checkouts.save(GatewayCheckout.create(s, pro.getId(), new BigDecimal("59900"),
-                "owner@test.com", null, NOW.plusHours(24), "owner", NOW.minusSeconds(10)));
-
-        assertThatThrownBy(() -> start("PROFESIONAL")).isInstanceOf(CheckoutInProgressException.class)
+        assertThatThrownBy(() -> authorize(prepared.checkoutId())).isInstanceOf(CheckoutInProgressException.class)
                 .extracting("code").isEqualTo("CHECKOUT_IN_PROGRESS");
-
-        assertThat(h.checkouts.findById(inFlight.getId()).orElseThrow().getStatus())
-                .isEqualTo(CheckoutStatus.PENDING);
         assertThat(h.gateway.created).isEmpty();
-        assertThat(h.gateway.canceled).isEmpty();
     }
 
     @Test
-    void anOldCheckoutWithoutInitPointOrForAnotherPlanIsNotInProgress() {
-        Subscription s = h.store(subscription().planId(pro.getId()).build());
-        GatewayCheckout stale = h.checkouts.save(GatewayCheckout.create(s, pro.getId(), new BigDecimal("59900"),
-                "owner@test.com", null, NOW.plusHours(24), "owner", NOW.minusSeconds(31)));
-
-        start("PROFESIONAL");
-
-        assertThat(h.checkouts.findById(stale.getId()).orElseThrow().getStatus())
-                .isEqualTo(CheckoutStatus.SUPERSEDED);
-
-        GatewayHarness other = new GatewayHarness();
-        other.plans.put(pro);
-        other.plans.put(inicial);
-        Subscription t = other.store(subscription().planId(pro.getId()).build());
-        other.checkouts.save(GatewayCheckout.create(t, inicial.getId(), new BigDecimal("14900"), "owner@test.com",
-                null, NOW.plusHours(24), "owner", NOW.minusSeconds(5)));
-
-        assertThat(other.checkoutUseCase.start("tenant-1", new CheckoutRequest("PROFESIONAL", null), OWNER)
-                .reused()).isFalse();
-    }
-
-    @Test
-    void gatewayErrorsReachTheTenantWithAGenericMessage() {
+    void authorizeOfAnotherTenantCheckoutIsNotFound() {
         h.store(subscription().planId(pro.getId()).build());
-        h.gateway.failure = new GatewayRejectedException("payer_email inválido: owner@test.com (status 400)");
+        CheckoutView prepared = prepare("PROFESIONAL");
 
-        assertThatThrownBy(() -> start("PROFESIONAL")).isInstanceOf(GatewayRejectedException.class)
-                .hasMessage("No se pudo iniciar el pago con Mercado Pago");
+        assertThatThrownBy(() -> h.checkoutUseCase.authorize("otro-tenant", prepared.checkoutId(), TOKEN, OWNER))
+                .isInstanceOf(CheckoutNotFoundException.class);
+        assertThat(h.gateway.created).isEmpty();
+    }
+
+    @Test
+    void authorizeOfExpiredOrNonPendingCheckoutIsNotAllowed() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        GatewayCheckout expired = h.checkouts.save(GatewayCheckout.create(s, pro.getId(), new BigDecimal("59900"),
+                "owner@test.com", null, NOW.minusMinutes(1), "owner", NOW.minusHours(25)));
+        GatewayCheckout failed = GatewayCheckout.create(s, pro.getId(), new BigDecimal("59900"),
+                "owner@test.com", null, NOW.plusHours(24), "owner", NOW);
+        failed.markFailed(NOW);
+        h.checkouts.save(failed);
+
+        assertThatThrownBy(() -> authorize(expired.getId())).isInstanceOf(CheckoutNotAllowedException.class);
+        assertThatThrownBy(() -> authorize(failed.getId())).isInstanceOf(CheckoutNotAllowedException.class);
+        assertThat(h.gateway.created).isEmpty();
+    }
+
+    @Test
+    void prepareDoesNotRequireGatewayOrBackUrl() {
+        GatewayHarness noGateway = new GatewayHarness(false, GatewayHarness.BACK_URL);
+        noGateway.plans.put(plan("PROFESIONAL", true, new BigDecimal("59900")));
+        noGateway.store(subscription().build());
+        GatewayHarness noBackUrl = new GatewayHarness(true, " ");
+        noBackUrl.plans.put(plan("PROFESIONAL", true, new BigDecimal("59900")));
+        noBackUrl.store(subscription().build());
+
+        assertThat(noGateway.checkoutUseCase.prepare("tenant-1", new CheckoutRequest("PROFESIONAL", null), OWNER)
+                .initPoint()).isNull();
+        assertThat(noBackUrl.checkoutUseCase.prepare("tenant-1", new CheckoutRequest("PROFESIONAL", null), OWNER)
+                .checkoutId()).isNotNull();
+    }
+
+    @Test
+    void authorizeWithoutGatewayOrBackUrlIsBadGateway() {
+        GatewayHarness noGateway = new GatewayHarness(false, GatewayHarness.BACK_URL);
+        noGateway.plans.put(plan("PROFESIONAL", true, new BigDecimal("59900")));
+        noGateway.store(subscription().build());
+        UUID checkoutId = noGateway.checkoutUseCase.prepare("tenant-1", new CheckoutRequest("PROFESIONAL", null), OWNER)
+                .checkoutId();
+        GatewayHarness noBackUrl = new GatewayHarness(true, " ");
+        noBackUrl.plans.put(plan("PROFESIONAL", true, new BigDecimal("59900")));
+        noBackUrl.store(subscription().build());
+        UUID otherId = noBackUrl.checkoutUseCase.prepare("tenant-1", new CheckoutRequest("PROFESIONAL", null), OWNER)
+                .checkoutId();
+
+        assertThatThrownBy(() -> noGateway.checkoutUseCase.authorize("tenant-1", checkoutId, TOKEN, OWNER))
+                .isInstanceOf(GatewayUnavailableException.class);
+        assertThatThrownBy(() -> noBackUrl.checkoutUseCase.authorize("tenant-1", otherId, TOKEN, OWNER))
+                .isInstanceOf(GatewayUnavailableException.class);
     }
 
     @Test
     void customPlanRequiresContact() {
         h.store(subscription().planId(pro.getId()).build());
 
-        assertThatThrownBy(() -> start("EMPRESA")).isInstanceOf(CheckoutPlanRequiresContactException.class)
+        assertThatThrownBy(() -> prepare("EMPRESA")).isInstanceOf(CheckoutPlanRequiresContactException.class)
                 .isInstanceOf(PlanRequiresContactException.class).extracting("code").isEqualTo("PLAN_REQUIRES_CONTACT");
         assertThat(h.checkouts.all()).isEmpty();
         assertThat(h.gateway.created).isEmpty();
@@ -165,46 +244,39 @@ class CheckoutUseCaseTest {
     void nonVisiblePlanIsNotOffered() {
         h.store(subscription().planId(pro.getId()).build());
 
-        assertThatThrownBy(() -> start("INTERNO")).isInstanceOf(PlanNotFoundException.class);
+        assertThatThrownBy(() -> prepare("INTERNO")).isInstanceOf(PlanNotFoundException.class);
         assertThat(h.checkouts.all()).isEmpty();
     }
 
     @Test
-    void withoutGatewayOrBackUrlIsBadGateway() {
-        GatewayHarness noGateway = new GatewayHarness(false, GatewayHarness.BACK_URL);
-        noGateway.plans.put(plan("PROFESIONAL", true, new BigDecimal("59900")));
-        noGateway.store(subscription().build());
-        GatewayHarness noBackUrl = new GatewayHarness(true, " ");
-        noBackUrl.plans.put(plan("PROFESIONAL", true, new BigDecimal("59900")));
-        noBackUrl.store(subscription().build());
+    void gatewayErrorsReachTheTenantWithAGenericMessage() {
+        h.store(subscription().planId(pro.getId()).build());
+        UUID checkoutId = prepare("PROFESIONAL").checkoutId();
+        h.gateway.failure = new GatewayRejectedException("card_token inválido (status 400)");
 
-        assertThatThrownBy(() -> noGateway.checkoutUseCase.start("tenant-1",
-                new CheckoutRequest("PROFESIONAL", null), OWNER)).isInstanceOf(GatewayUnavailableException.class);
-        assertThatThrownBy(() -> noBackUrl.checkoutUseCase.start("tenant-1",
-                new CheckoutRequest("PROFESIONAL", null), OWNER)).isInstanceOf(GatewayUnavailableException.class);
-        assertThat(noGateway.checkouts.all()).isEmpty();
-        assertThat(noBackUrl.checkouts.all()).isEmpty();
+        assertThatThrownBy(() -> authorize(checkoutId)).isInstanceOf(GatewayRejectedException.class)
+                .hasMessage("No se pudo iniciar el pago con Mercado Pago");
     }
 
     @Test
     void gatewayTimeoutLeavesTheCheckoutFailedAndPropagates() {
         h.store(subscription().planId(pro.getId()).build());
+        UUID checkoutId = prepare("PROFESIONAL").checkoutId();
         h.gateway.failure = new GatewayTimeoutException("timeout");
 
-        assertThatThrownBy(() -> start("PROFESIONAL")).isInstanceOf(GatewayTimeoutException.class);
+        assertThatThrownBy(() -> authorize(checkoutId)).isInstanceOf(GatewayTimeoutException.class);
 
-        assertThat(h.checkouts.all()).singleElement()
-                .satisfies(c -> assertThat(c.getStatus()).isEqualTo(CheckoutStatus.FAILED));
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.FAILED);
     }
 
     @Test
     void unexpectedGatewayErrorIsReportedAsUnavailable() {
         h.store(subscription().planId(pro.getId()).build());
+        UUID checkoutId = prepare("PROFESIONAL").checkoutId();
         h.gateway.failure = new IllegalStateException("boom");
 
-        assertThatThrownBy(() -> start("PROFESIONAL")).isInstanceOf(GatewayUnavailableException.class);
-        assertThat(h.checkouts.all()).singleElement()
-                .satisfies(c -> assertThat(c.getStatus()).isEqualTo(CheckoutStatus.FAILED));
+        assertThatThrownBy(() -> authorize(checkoutId)).isInstanceOf(GatewayUnavailableException.class);
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.FAILED);
     }
 
     @Test
@@ -216,8 +288,8 @@ class CheckoutUseCaseTest {
         suspended.store(subscription().status(SubscriptionStatus.SUSPENDED)
                 .suspensionReason(SuspensionReason.ADMIN_READ_ONLY).build());
 
-        assertThatThrownBy(() -> start("PROFESIONAL")).isInstanceOf(CheckoutNotAllowedException.class);
-        assertThatThrownBy(() -> suspended.checkoutUseCase.start("tenant-1",
+        assertThatThrownBy(() -> prepare("PROFESIONAL")).isInstanceOf(CheckoutNotAllowedException.class);
+        assertThatThrownBy(() -> suspended.checkoutUseCase.prepare("tenant-1",
                 new CheckoutRequest("PROFESIONAL", null), OWNER)).isInstanceOf(CheckoutNotAllowedException.class);
         assertThat(h.gateway.created).isEmpty();
     }
@@ -226,22 +298,37 @@ class CheckoutUseCaseTest {
     void activeSubscriptionStartsChargingWhenThePaidPeriodEnds() {
         Subscription s = h.store(subscription().planId(pro.getId()).status(SubscriptionStatus.ACTIVE)
                 .currentPeriodEnd(NOW.plusDays(10)).build());
+        UUID checkoutId = prepare("PROFESIONAL").checkoutId();
 
-        start("PROFESIONAL");
+        authorize(checkoutId);
 
         assertThat(h.gateway.created.get(0).startDate()).isEqualTo(s.getCurrentPeriodEnd());
     }
 
     @Test
-    void tenantViewShowsThePendingCheckout() {
+    void authorizeForAnotherPlanAfterFirstAuthorizeCancelsPreviousPreapproval() {
+        h.store(subscription().planId(pro.getId()).build());
+        UUID firstId = prepare("PROFESIONAL").checkoutId();
+        authorize(firstId);
+
+        CheckoutView secondPrepare = prepare("INICIAL");
+        authorize(secondPrepare.checkoutId());
+
+        assertThat(h.checkouts.findById(firstId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.SUPERSEDED);
+        assertThat(h.gateway.canceled).containsExactly("pre-1");
+    }
+
+    @Test
+    void tenantViewShowsThePendingCheckoutWithoutRequiringInitPoint() {
         Subscription s = h.store(subscription().planId(pro.getId()).build());
-        CheckoutView view = start("PROFESIONAL");
+        CheckoutView view = prepare("PROFESIONAL");
 
         TenantSubscriptionView tenantView = TestFixtures.assembler(h.checkouts, h.payments, h.gatewayOperations)
                 .tenantView(s, pro, NOW);
 
         assertThat(tenantView.pendingCheckout()).isNotNull();
-        assertThat(tenantView.pendingCheckout().initPoint()).isEqualTo(view.initPoint());
+        assertThat(tenantView.pendingCheckout().checkoutId()).isEqualTo(view.checkoutId());
+        assertThat(tenantView.pendingCheckout().initPoint()).isNull();
         assertThat(tenantView.allowedActions()).contains("CHECKOUT");
         assertThat(tenantView.hasPaymentMethod()).isFalse();
     }
