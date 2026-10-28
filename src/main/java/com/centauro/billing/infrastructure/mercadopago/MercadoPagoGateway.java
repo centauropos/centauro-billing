@@ -243,7 +243,18 @@ public class MercadoPagoGateway implements PaymentGateway {
     private String detail(HttpStatusCodeException e) {
         try {
             JsonNode node = objectMapper.readTree(e.getResponseBodyAsString());
-            String message = node == null ? null : node.path("message").asText(null);
+            if (node == null) {
+                return "";
+            }
+            String message = firstNonBlank(
+                    node.path("message").asText(null),
+                    node.path("error").asText(null),
+                    node.path("cause").isArray() && !node.path("cause").isEmpty()
+                            ? node.path("cause").get(0).path("description").asText(null)
+                            : null,
+                    node.path("cause").isArray() && !node.path("cause").isEmpty()
+                            ? node.path("cause").get(0).path("code").asText(null)
+                            : null);
             if (isBlank(message)) {
                 return "";
             }
@@ -252,6 +263,18 @@ public class MercadoPagoGateway implements PaymentGateway {
         } catch (Exception ignored) {
             return "";
         }
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+        return null;
     }
 
     /** Enmascara emails y valores de {@code card_token} / {@code card_token_id} en texto de error. */

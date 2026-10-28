@@ -29,6 +29,8 @@ public record MercadoPagoProperties(
 
     /** Prefijo de los access tokens de producción de Mercado Pago. */
     static final String PRODUCTION_TOKEN_PREFIX = "APP_USR-";
+    /** Prefijo de los access tokens de prueba (Credentials → Test). */
+    static final String TEST_TOKEN_PREFIX = "TEST-";
 
     public boolean hasAccessToken() {
         return accessToken != null && !accessToken.isBlank();
@@ -36,6 +38,11 @@ public record MercadoPagoProperties(
 
     public boolean isProductionToken() {
         return hasAccessToken() && accessToken.trim().startsWith(PRODUCTION_TOKEN_PREFIX);
+    }
+
+    /** Token de credenciales de prueba ({@code TEST-…}); el curl oficial de suscripciones manda {@code X-scope: stage}. */
+    public boolean isTestToken() {
+        return hasAccessToken() && accessToken.trim().startsWith(TEST_TOKEN_PREFIX);
     }
 
     public boolean hasWebhookSecret() {

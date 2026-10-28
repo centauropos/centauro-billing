@@ -32,11 +32,18 @@ public class MercadoPagoConfiguration {
                 .build();
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
         requestFactory.setReadTimeout(Duration.ofMillis(properties.readTimeoutMs()));
-        return builder.clone()
+        RestClient.Builder client = builder.clone()
                 .baseUrl(properties.baseUrl())
                 .requestFactory(requestFactory)
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + properties.accessToken())
-                .build();
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + properties.accessToken());
+        // Docs MP (preapproval authorized con Bearer TEST-…): header X-scope: stage.
+        if (properties.isTestToken()) {
+            client.defaultHeader("X-scope", "stage");
+            log.info("Mercado Pago: access token de prueba; se envía X-scope=stage");
+        } else if (properties.isProductionToken()) {
+            log.info("Mercado Pago: access token APP_USR (producción o cuenta de prueba vendedor)");
+        }
+        return client.build();
     }
 
     @Bean
