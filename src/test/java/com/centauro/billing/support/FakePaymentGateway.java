@@ -43,9 +43,11 @@ public class FakePaymentGateway implements PaymentGateway {
         failIfConfigured();
         created.add(request);
         String id = "pre-" + (++sequence);
+        // El resultado es authorized; el snapshot en mapa queda pending hasta que el test (o un
+        // h.preapproval AUTHORIZED) simule el webhook / la reconsulta.
         subscriptions.putIfAbsent(id, new GatewaySubscriptionSnapshot(id, GatewaySubscriptionStatus.PENDING,
                 "pending", request.checkoutId().toString(), request.amount(), request.currency(), null, null));
-        return new RecurringCheckoutResult(id, "https://mp.test/checkout/" + id, "pending");
+        return new RecurringCheckoutResult(id, null, "authorized");
     }
 
     @Override

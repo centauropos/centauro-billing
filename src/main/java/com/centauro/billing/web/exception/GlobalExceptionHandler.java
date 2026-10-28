@@ -3,6 +3,7 @@ package com.centauro.billing.web.exception;
 import com.centauro.billing.domain.exception.BillingException;
 import com.centauro.billing.domain.exception.CheckoutInProgressException;
 import com.centauro.billing.domain.exception.CheckoutNotAllowedException;
+import com.centauro.billing.domain.exception.CheckoutNotFoundException;
 import com.centauro.billing.domain.exception.CheckoutPlanRequiresContactException;
 import com.centauro.billing.domain.exception.DuplicatePaymentException;
 import com.centauro.billing.domain.exception.DuplicatePlanException;
@@ -60,6 +61,7 @@ public class GlobalExceptionHandler {
             Map.entry(SubscriptionNotFoundException.class, HttpStatus.NOT_FOUND),
             Map.entry(PlanNotFoundException.class, HttpStatus.NOT_FOUND),
             Map.entry(PlanPriceNotFoundException.class, HttpStatus.NOT_FOUND),
+            Map.entry(CheckoutNotFoundException.class, HttpStatus.NOT_FOUND),
             Map.entry(InvalidSubscriptionTransitionException.class, HttpStatus.CONFLICT),
             Map.entry(CheckoutNotAllowedException.class, HttpStatus.CONFLICT),
             Map.entry(DuplicatePlanException.class, HttpStatus.CONFLICT),

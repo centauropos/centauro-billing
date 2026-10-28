@@ -122,12 +122,14 @@ Una suscripción por tenant (`uq_subscriptions_tenant`). El trial se crea con
 ## Pasarela de pago
 
 `domain/port/PaymentGateway` define la interfaz; `infrastructure/mercadopago`
-la implementa con `RestClient` (preapproval **sin plan**, ARS, mensual).
+la implementa con `RestClient` (preapproval **sin plan**, ARS, mensual,
+contrato **without-plan-authorized**).
 El bean existe solo si `MP_ACCESS_TOKEN` tiene valor
 (`MercadoPagoConfiguredCondition`; `@ConditionalOnProperty` no sirve porque
 toma el string vacío como presente). Sin token la aplicación arranca igual:
-`GatewayOperations` resuelve el bean de forma opcional, el checkout da 502
-`GATEWAY_UNAVAILABLE` y los jobs de webhook y conciliación no corren.
+`GatewayOperations` resuelve el bean de forma opcional; `prepare` igual funciona,
+`authorize` da 502 `GATEWAY_UNAVAILABLE` y los jobs de webhook y conciliación
+no corren.
 
 Cancelar o cambiar de plan llama a la pasarela solo si la suscripción tiene
 `gatewaySubscriptionId`. Si lo tiene y no hay pasarela configurada, falla con
@@ -151,26 +153,54 @@ Reglas que no se negocian:
 
 ### Mercado Pago
 
-Checkout (`POST /api/v1/billing/checkout {planCode, payerEmail?}`, ADMIN o
-`BILLING_MANAGE`):
+Checkout del tenant en dos pasos (ADMIN o `BILLING_MANAGE`). El camino feliz
+usa el Brick / Card Form: tarjeta tokenizada, **sin redirect a `init_point`**.
+No se crean más preapprovals `pending`. Checkouts viejos con `initPoint` se
+pueden seguir exponiendo en la vista; `CheckoutExpirationJob` los trata como
+antes si tienen `preapprovalId`.
 
-1. Transacción corta (`CheckoutTransactions.prepare`): bloquea la suscripción,
-   valida plan (visible, con precio) y `canCheckout`, y guarda un
-   `gateway_checkouts` PENDING con el importe vigente. Un plan a medida da 409
-   `PLAN_REQUIRES_CONTACT`. Un PENDING del mismo plan sin `init_point` creado
-   hace menos de 30 s (doble click) da 409 `CHECKOUT_IN_PROGRESS` y no se
-   reemplaza. Un PENDING vigente del mismo plan, importe y email se reutiliza
-   (200); otro distinto se marca SUPERSEDED y su preapproval se cancela.
-2. Sin transacción: `POST /preapproval` con `external_reference` = id del
-   checkout y `X-Idempotency-Key` = id del checkout.
-3. Transacción corta: guarda `init_point` y el id del preapproval (201).
-   Si MP falla o da timeout, el checkout queda FAILED. Al tenant le llega
-   siempre "No se pudo iniciar el pago con Mercado Pago" (422/502/504 según
-   el caso); el detalle de MP va solo al log.
+1. **Prepare** — `POST /api/v1/billing/checkout {planCode}` (el `payerEmail`
+   del body está deprecado y se ignora):
+   - Transacción corta (`CheckoutTransactions.prepare`): bloquea la
+     suscripción, valida plan (visible, con precio) y `canCheckout`, y guarda
+     un `gateway_checkouts` PENDING con importe, `start_date` y
+     `payer_email` = `billingEmail` de la suscripción. **No llama a MP.**
+   - Plan a medida → 409 `PLAN_REQUIRES_CONTACT`. Sin `billingEmail` → 400.
+   - Si hay un authorize en vuelo sobre el PENDING (claim firme: sin ventana
+     de tiempo) → 409 `CHECKOUT_IN_PROGRESS` (también con el mismo plan: no
+     se reutiliza).
+   - Un PENDING vigente del mismo plan, importe y email **sin** claim se
+     reutiliza (200); otro distinto se marca SUPERSEDED y su preapproval (si
+     había) se cancela.
+   - 201 con `checkoutId`, `planCode`, `amount`, `currency`, `payerEmail`,
+     `startDate` (`initPoint` null / omitido).
+
+2. **Authorize** — `POST /api/v1/billing/checkout/{checkoutId}/authorize
+   {cardTokenId}`:
+   - Valida tenant + PENDING + no expirado + `canCheckout` (suscripción
+     `FOR UPDATE`; suspensión admin u otro débito autorizado → 409).
+     Idempotente: si ya tiene preapproval o está AUTHORIZED → 200 (sin
+     revalidar `canCheckout`). Carrera (claim en vuelo) → 409
+     `CHECKOUT_IN_PROGRESS`. Checkout ajeno → 404 `CHECKOUT_NOT_FOUND`.
+   - Sin transacción: `POST /preapproval` without-plan-authorized
+     (`status=authorized`, `card_token_id`, `payer_email` del checkout,
+     `auto_recurring` como siempre, `back_url` =
+     `BILLING_CHECKOUT_BACK_URL?checkout=<id>`, `external_reference` =
+     checkoutId, `X-Idempotency-Key` = checkoutId). **Nunca loguear
+     `cardTokenId`** ni mensajes de error sin enmascarar emails /
+     `card_token(_id)`.
+   - Transacción corta: adjunta el id del preapproval solo si sigue PENDING
+     (201); si ya no, no muta y se cancela el preapproval nuevo afuera.
+     Rechazo 4xx (`GatewayRejectedException`) → checkout FAILED. Timeout o
+     5xx (`GatewayTimeout` / `GatewayUnavailable`) → deja PENDING y libera
+     el claim para reintentar con la misma idempotency key. Al tenant le
+     llega siempre "No se pudo iniciar el pago con Mercado Pago"
+     (422/502/504); el detalle de MP (enmascarado) va solo al log.
 
 `start_date` es el fin del trial vigente o del período pago en curso, así no se
-cobra dos veces el mismo tiempo. `back_url` sale de `BILLING_CHECKOUT_BACK_URL`
-con `?checkout=<id>`; sin esa variable el checkout da 502.
+cobra dos veces el mismo tiempo. `back_url` hace falta en **authorize** (sin
+`BILLING_CHECKOUT_BACK_URL` → 502); prepare no la exige. AllowedAction
+`CHECKOUT` sigue existiendo (adherir tarjeta).
 
 Webhook (`POST /webhooks/mercadopago`), en este orden:
 
@@ -211,6 +241,14 @@ llega segundo no pisa al otro.
 | cobro aprobado de un preapproval reemplazado | registrado sin aplicar, evento `PAYMENT_FROM_SUPERSEDED_DEBIT`, se vuelve a pedir la cancelación; visible en la plataforma |
 | cobro rechazado | `payments` REJECTED, evento `PAYMENT_REJECTED` y aviso `PAYMENT_REJECTED` en la vista del tenant |
 
+El preapproval `authorized` **vincula** el débito (`PAYMENT_METHOD_AUTHORIZED`)
+pero **no activa** el período. La activación / renovación solo ocurre con un
+cobro `APPROVED` reconsultado. El cobro mínimo de validación de tarjeta que
+Mercado Pago puede emitir al autorizar **no** debe aplicar período: su monto
+no coincide con el precio del plan y cae en `PAYMENT_AMOUNT_MISMATCH`
+(registrado sin aplicar). El primer cobro real (~1 h después) lo cubren el
+webhook y la conciliación.
+
 El importe del débito es el del preapproval reconsultado o, si no está, el
 del checkout que lo creó: un cobro con el importe viejo tras un cambio de
 plan se aplica.
@@ -235,7 +273,7 @@ transacción abierta durante las llamadas HTTP. Cursor por id.
 
 | Job | Lock | Qué hace |
 |---|---|---|
-| `CheckoutExpirationJob` | 1002 | PENDING vencidos → EXPIRED; reconsulta el preapproval antes de cancelarlo: si está autorizado lo aplica con el flujo normal, y nunca cancela el débito vigente. Si MP no responde, no cancela |
+| `CheckoutExpirationJob` | 1002 | PENDING vencidos → EXPIRED; sin `preapprovalId` (prepare sin authorize) solo marca EXPIRED; con preapproval reconsulta: si está autorizado lo aplica, nunca cancela el débito AUTHORIZED vinculado, y cancela el resto. Si MP no responde, no cancela |
 | `WebhookRetryJob` | 1003 | reprocesa RECEIVED/FAILED vencidos, backoff `2^intentos` min (tope 6 h), hasta `BILLING_WEBHOOK_MAX_ATTEMPTS` |
 | `GatewayReconciliationJob` | 1004 | reconsulta cada débito vinculado y sus cobros; cancela débitos vivos de bajas posteriores al vínculo; pausa/reanuda según la suspensión administrativa; corrige importes distintos del precio; aplica autorizaciones tardías de checkouts EXPIRED/FAILED o cancela preapprovals de checkouts reemplazados. Acotado por `BILLING_RECONCILIATION_MAX_ITEMS` (2000) y `BILLING_RECONCILIATION_MAX_MINUTES` (20) |
 
@@ -319,7 +357,7 @@ fin.
 
 | Excepción | HTTP |
 |---|---|
-| `SubscriptionNotFoundException`, `PlanNotFoundException`, `PlanPriceNotFoundException` | 404 |
+| `SubscriptionNotFoundException`, `PlanNotFoundException`, `PlanPriceNotFoundException`, `CheckoutNotFoundException` | 404 |
 | `InvalidSubscriptionTransitionException`, `SamePlanException`, `CheckoutNotAllowedException`, `Duplicate*Exception`, `PriceAlreadyEffectiveException`, `SubscriptionAdminSuspendedException`, `CheckoutInProgressException` (`CHECKOUT_IN_PROGRESS`), `CheckoutPlanRequiresContactException` (`PLAN_REQUIRES_CONTACT`) | 409 |
 | `WebhookPayloadTooLargeException` (`PAYLOAD_TOO_LARGE`) | 413 |
 | `PlanWithoutPriceException`, `PlanCustomPricingException` (`PLAN_CUSTOM_PRICING`), `PlanRequiresContactException` (`PLAN_REQUIRES_CONTACT`), `GatewayRejectedException` | 422 |
@@ -444,7 +482,7 @@ Mercado Pago (todas opcionales para arrancar):
 | `MP_WEBHOOK_MAX_BODY_BYTES` (65536) | tamaño máximo del body; más es 413 |
 | `BILLING_RECONCILIATION_MAX_ITEMS` (2000), `BILLING_RECONCILIATION_MAX_MINUTES` (20) | tope por corrida de la conciliación |
 | `MP_CONNECT_TIMEOUT_MS` (5000), `MP_READ_TIMEOUT_MS` (15000) | timeouts del `RestClient` |
-| `BILLING_CHECKOUT_BACK_URL` | a dónde vuelve el tenant desde MP; sin ella el checkout da 502 |
+| `BILLING_CHECKOUT_BACK_URL` | `back_url` del preapproval en authorize; sin ella authorize da 502 |
 | `BILLING_PUBLIC_BASE_URL` | si está, se manda `notification_url = <base>/webhooks/mercadopago` |
 | `BILLING_JOBS_CHECKOUT_EXPIRATION_CRON`, `BILLING_JOBS_WEBHOOK_RETRY_CRON`, `BILLING_JOBS_RECONCILIATION_CRON` | crons de los jobs |
 | `BILLING_WEBHOOK_MAX_ATTEMPTS` (10) | reintentos de un webhook FAILED |

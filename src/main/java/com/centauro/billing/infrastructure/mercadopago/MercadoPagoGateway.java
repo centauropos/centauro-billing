@@ -61,6 +61,9 @@ public class MercadoPagoGateway implements PaymentGateway {
     private static final Logger log = LoggerFactory.getLogger(MercadoPagoGateway.class);
     private static final DateTimeFormatter MP_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
     private static final Pattern EMAIL = Pattern.compile("[^\\s@\"]+@[^\\s@\"]+");
+    /** Valores citados junto a {@code card_token} / {@code card_token_id} en mensajes de error de MP. */
+    private static final Pattern CARD_TOKEN = Pattern.compile(
+            "(?i)(card_token(?:_id)?)([\"'\\s:=]+)([^\\s\"',};]+)");
     private static final int MAX_DETAIL = 200;
 
     private final RestClient client;
@@ -80,12 +83,16 @@ public class MercadoPagoGateway implements PaymentGateway {
 
     @Override
     public RecurringCheckoutResult createRecurringCheckout(RecurringCheckoutRequest request) {
+        if (isBlank(request.cardTokenId())) {
+            throw new GatewayRejectedException("Falta card_token_id para autorizar el preapproval");
+        }
         String checkoutId = request.checkoutId().toString();
+        // Without-plan-authorized: status authorized + card_token_id. Nunca loguear el token.
         MpPreapprovalRequest body = new MpPreapprovalRequest(request.reason(), checkoutId, request.payerEmail(),
-                request.backUrl(), notificationUrl,
+                request.cardTokenId(), request.backUrl(), notificationUrl,
                 new MpPreapprovalRequest.AutoRecurring(1, "months", format(request.startDate()),
                         Amounts.scale(request.amount()), request.currency()),
-                "pending");
+                AUTHORIZED_STATUS);
         MpPreapproval created = call("la creación del preapproval", false, () -> client.post()
                 .uri("/preapproval")
                 .header(IDEMPOTENCY_HEADER, checkoutId)
@@ -93,10 +100,10 @@ public class MercadoPagoGateway implements PaymentGateway {
                 .body(body)
                 .retrieve()
                 .body(MpPreapproval.class));
-        if (created == null || isBlank(created.id()) || isBlank(created.initPoint())) {
-            throw new GatewayUnavailableException("Mercado Pago devolvió un preapproval sin id o sin init_point");
+        if (created == null || isBlank(created.id())) {
+            throw new GatewayUnavailableException("Mercado Pago devolvió un preapproval sin id");
         }
-        log.info("Mercado Pago: preapproval {} creado para el checkout {}", created.id(), checkoutId);
+        log.info("Mercado Pago: preapproval {} autorizado para el checkout {}", created.id(), checkoutId);
         return new RecurringCheckoutResult(created.id(), created.initPoint(), created.status());
     }
 
@@ -230,7 +237,9 @@ public class MercadoPagoGateway implements PaymentGateway {
         return false;
     }
 
-    /** El {@code message} del error de MP, acotado y sin emails (puede citar el {@code payer_email}). */
+    /**
+     * El {@code message} del error de MP, acotado y sin emails ni {@code card_token(_id)} (MP puede citarlos).
+     */
     private String detail(HttpStatusCodeException e) {
         try {
             JsonNode node = objectMapper.readTree(e.getResponseBodyAsString());
@@ -238,11 +247,20 @@ public class MercadoPagoGateway implements PaymentGateway {
             if (isBlank(message)) {
                 return "";
             }
-            String clean = EMAIL.matcher(message).replaceAll("***");
+            String clean = redactSensitive(message);
             return ": " + (clean.length() > MAX_DETAIL ? clean.substring(0, MAX_DETAIL) : clean);
         } catch (Exception ignored) {
             return "";
         }
+    }
+
+    /** Enmascara emails y valores de {@code card_token} / {@code card_token_id} en texto de error. */
+    static String redactSensitive(String message) {
+        if (message == null || message.isBlank()) {
+            return message;
+        }
+        String withoutTokens = CARD_TOKEN.matcher(message).replaceAll("$1$2***");
+        return EMAIL.matcher(withoutTokens).replaceAll("***");
     }
 
     private static String format(OffsetDateTime value) {

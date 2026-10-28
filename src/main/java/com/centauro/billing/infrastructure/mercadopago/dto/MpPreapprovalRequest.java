@@ -6,14 +6,15 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.math.BigDecimal;
 
 /**
- * {@code POST /preapproval} sin plan ({@code preapproval_plan_id}), estado {@code pending}: MP devuelve un
- * {@code init_point} donde el pagador carga la tarjeta. Verificar contra la documentación vigente de MP.
+ * {@code POST /preapproval} sin plan ({@code preapproval_plan_id}), contrato without-plan-authorized:
+ * {@code status=authorized} + {@code card_token_id}. Verificar contra la documentación vigente de MP.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record MpPreapprovalRequest(
         String reason,
         @JsonProperty("external_reference") String externalReference,
         @JsonProperty("payer_email") String payerEmail,
+        @JsonProperty("card_token_id") String cardTokenId,
         @JsonProperty("back_url") String backUrl,
         @JsonProperty("notification_url") String notificationUrl,
         @JsonProperty("auto_recurring") AutoRecurring autoRecurring,

@@ -1,5 +1,6 @@
 package com.centauro.billing.web.controller;
 
+import com.centauro.billing.application.dto.AuthorizeCheckoutRequest;
 import com.centauro.billing.application.dto.CancelRequest;
 import com.centauro.billing.application.dto.ChangePlanRequest;
 import com.centauro.billing.application.dto.CheckoutRequest;
@@ -17,12 +18,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.UUID;
 
 /** API del tenant. El tenantId sale siempre del JWT. */
 @RestController
@@ -39,11 +42,27 @@ public class TenantBillingController {
         this.checkoutUseCase = checkoutUseCase;
     }
 
-    /** 201 con un checkout nuevo; 200 si se reutiliza el pendiente (mismo plan, importe y pagador). */
+    /**
+     * Prepara un checkout PENDING (plan, importe, start_date, billingEmail). No llama a Mercado Pago.
+     * 201 con uno nuevo; 200 si se reutiliza el pendiente (mismo plan, importe y email).
+     */
     @PostMapping("/checkout")
     @PreAuthorize("@billingAuth.canManage()")
     public ResponseEntity<CheckoutView> checkout(@Valid @RequestBody CheckoutRequest request) {
-        CheckoutView view = checkoutUseCase.start(TenantContextHolder.requireTenantId(), request,
+        CheckoutView view = checkoutUseCase.prepare(TenantContextHolder.requireTenantId(), request,
+                TenantContextHolder.tenantUserActor());
+        return ResponseEntity.status(view.reused() ? HttpStatus.OK : HttpStatus.CREATED).body(view);
+    }
+
+    /**
+     * Autoriza el débito con la tarjeta tokenizada del Brick ({@code cardTokenId} → MP
+     * {@code status=authorized}). 201 nuevo; 200 si ya estaba autorizado (idempotente).
+     */
+    @PostMapping("/checkout/{checkoutId}/authorize")
+    @PreAuthorize("@billingAuth.canManage()")
+    public ResponseEntity<CheckoutView> authorize(@PathVariable UUID checkoutId,
+                                                  @Valid @RequestBody AuthorizeCheckoutRequest request) {
+        CheckoutView view = checkoutUseCase.authorize(TenantContextHolder.requireTenantId(), checkoutId, request,
                 TenantContextHolder.tenantUserActor());
         return ResponseEntity.status(view.reused() ? HttpStatus.OK : HttpStatus.CREATED).body(view);
     }

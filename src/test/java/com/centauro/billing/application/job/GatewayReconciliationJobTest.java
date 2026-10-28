@@ -1,5 +1,6 @@
 package com.centauro.billing.application.job;
 
+import com.centauro.billing.application.dto.AuthorizeCheckoutRequest;
 import com.centauro.billing.application.dto.CheckoutRequest;
 import com.centauro.billing.application.service.GatewaySettings;
 import com.centauro.billing.domain.enums.GatewayChargeStatus;
@@ -187,8 +188,10 @@ class GatewayReconciliationJobTest {
     }
 
     private UUID checkout(String planCode) {
-        return h.checkoutUseCase.start("tenant-1", new CheckoutRequest(planCode, null), Actor.tenantUser("owner"))
-                .checkoutId();
+        Actor owner = Actor.tenantUser("owner");
+        var prepared = h.checkoutUseCase.prepare("tenant-1", new CheckoutRequest(planCode, null), owner);
+        return h.checkoutUseCase.authorize("tenant-1", prepared.checkoutId(),
+                new AuthorizeCheckoutRequest("card-tok"), owner).checkoutId();
     }
 
     @Test

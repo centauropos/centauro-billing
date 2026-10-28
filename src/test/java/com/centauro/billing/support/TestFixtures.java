@@ -90,8 +90,10 @@ public final class TestFixtures {
         private GatewayName gateway;
         private String gatewayStatus;
         private OffsetDateTime gatewayLastModified;
+        private String billingEmail = "owner@test.com";
 
         public Builder gatewayStatus(String value) { gatewayStatus = value; return this; }
+        public Builder billingEmail(String value) { billingEmail = value; return this; }
         public Builder gatewayLastModified(OffsetDateTime value) { gatewayLastModified = value; return this; }
         public Builder tenantId(String value) { tenantId = value; return this; }
         public Builder planId(UUID value) { planId = value; return this; }
@@ -116,7 +118,7 @@ public final class TestFixtures {
                     trialEndsAt, currentPeriodStart, currentPeriodEnd, billingAnchorDay, graceEndsAt,
                     cancelAtPeriodEnd, null, null,
                     priceAmount, "ARS", gateway, gatewaySubscriptionId, gatewayStatus, gatewayLastModified, null,
-                    "owner@test.com",
+                    billingEmail,
                     "Empresa Test", 0L, NOW.minusDays(30));
         }
     }

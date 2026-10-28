@@ -1,5 +1,6 @@
 package com.centauro.billing.application.usecase;
 
+import com.centauro.billing.application.dto.AuthorizeCheckoutRequest;
 import com.centauro.billing.application.dto.CheckoutRequest;
 import com.centauro.billing.application.dto.CheckoutView;
 import com.centauro.billing.domain.enums.CheckoutStatus;
@@ -52,9 +53,10 @@ class WebhookUseCaseTest {
     }
 
     private UUID checkout(String planCode) {
-        CheckoutView view = h.checkoutUseCase.start("tenant-1", new CheckoutRequest(planCode, null),
-                Actor.tenantUser("owner"));
-        return view.checkoutId();
+        Actor owner = Actor.tenantUser("owner");
+        CheckoutView prepared = h.checkoutUseCase.prepare("tenant-1", new CheckoutRequest(planCode, null), owner);
+        return h.checkoutUseCase.authorize("tenant-1", prepared.checkoutId(),
+                new AuthorizeCheckoutRequest("card-tok"), owner).checkoutId();
     }
 
     private boolean notify(String notificationId, String topic, String resourceId) {

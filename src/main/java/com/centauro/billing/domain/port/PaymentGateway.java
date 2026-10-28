@@ -18,7 +18,10 @@ public interface PaymentGateway {
 
     GatewayName name();
 
-    /** Crea la adhesión pendiente y devuelve el link de pago. Idempotente por {@code checkoutId}. */
+    /**
+     * Crea el preapproval without-plan-authorized ({@code status=authorized} + {@code card_token_id}).
+     * Idempotente por {@code checkoutId}. {@code initPoint} del resultado puede ser null.
+     */
     RecurringCheckoutResult createRecurringCheckout(RecurringCheckoutRequest request);
 
     GatewaySubscriptionSnapshot getSubscription(String gatewaySubscriptionId);

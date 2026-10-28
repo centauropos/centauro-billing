@@ -1,5 +1,6 @@
 package com.centauro.billing.application.job;
 
+import com.centauro.billing.application.dto.AuthorizeCheckoutRequest;
 import com.centauro.billing.application.dto.CheckoutRequest;
 import com.centauro.billing.domain.enums.CheckoutStatus;
 import com.centauro.billing.domain.enums.GatewayName;
@@ -36,9 +37,18 @@ class CheckoutExpirationJobTest {
     }
 
     private UUID checkoutFor(String tenantId) {
+        Actor owner = Actor.tenantUser("owner");
         h.store(subscription().tenantId(tenantId).build());
-        return h.checkoutUseCase.start(tenantId, new CheckoutRequest("PROFESIONAL", null), Actor.tenantUser("owner"))
-                .checkoutId();
+        var prepared = h.checkoutUseCase.prepare(tenantId, new CheckoutRequest("PROFESIONAL", null), owner);
+        return h.checkoutUseCase.authorize(tenantId, prepared.checkoutId(),
+                new AuthorizeCheckoutRequest("card-tok"), owner).checkoutId();
+    }
+
+    /** PENDING sin preapproval: solo se marca EXPIRED, sin llamar a la pasarela. */
+    private UUID preparedOnly(String tenantId) {
+        h.store(subscription().tenantId(tenantId).build());
+        return h.checkoutUseCase.prepare(tenantId, new CheckoutRequest("PROFESIONAL", null),
+                Actor.tenantUser("owner")).checkoutId();
     }
 
     private CheckoutExpirationJob jobAt(OffsetDateTime now, int batchSize) {
@@ -133,6 +143,18 @@ class CheckoutExpirationJobTest {
         jobAt(NOW.plusHours(1), 100).run();
 
         assertThat(checkout(id).getStatus()).isEqualTo(CheckoutStatus.PENDING);
+        assertThat(h.gateway.canceled).isEmpty();
+    }
+
+    @Test
+    void pendingWithoutPreapprovalExpiresWithoutCallingTheGateway() {
+        UUID id = preparedOnly("t1");
+
+        jobAt(NOW.plusHours(25), 100).run();
+
+        assertThat(checkout(id).getStatus()).isEqualTo(CheckoutStatus.EXPIRED);
+        assertThat(checkout(id).getGatewayPreapprovalId()).isNull();
+        assertThat(h.gateway.subscriptionLookups).isEmpty();
         assertThat(h.gateway.canceled).isEmpty();
     }
 
