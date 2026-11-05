@@ -62,7 +62,7 @@ public final class GatewayHarness {
                 new PaymentApplier(subscriptions, payments, events), periodCalculator, gatewayOperations);
         checkoutTransactions = new CheckoutTransactions(subscriptions, plans, checkouts, new AccessPolicy(TERMS),
                 new AllowedActionsPolicy(), settings);
-        checkoutUseCase = new CheckoutUseCase(checkoutTransactions, gatewayOperations, settings,
+        checkoutUseCase = new CheckoutUseCase(checkoutTransactions, gatewayOperations, sync, settings,
                 TestFixtures.assembler(checkouts, payments, gatewayOperations), clock);
         webhookUseCase = new WebhookUseCase(webhookEvents, sync, gatewayOperations, settings, clock);
     }

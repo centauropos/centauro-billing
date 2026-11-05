@@ -191,6 +191,11 @@ antes si tienen `preapprovalId`.
      `card_token(_id)`.
    - Transacción corta: adjunta el id del preapproval solo si sigue PENDING
      (201); si ya no, no muta y se cancela el preapproval nuevo afuera.
+   - Tras adjuntar (y en el 200 idempotente si el checkout sigue PENDING),
+     reconsulta el preapproval y lo aplica con `GatewaySyncService`: vincula
+     el débito y marca el checkout AUTHORIZED. Si la reconsulta falla o MP
+     aún lo muestra `pending`, deja PENDING y lo retoma el webhook. Sin esto
+     el tenant ve "pago sin terminar" aunque la tarjeta ya esté en MP.
      Rechazo 4xx (`GatewayRejectedException`) → checkout FAILED. Timeout o
      5xx (`GatewayTimeout` / `GatewayUnavailable`) → deja PENDING y libera
      el claim para reintentar con la misma idempotency key. Al tenant le

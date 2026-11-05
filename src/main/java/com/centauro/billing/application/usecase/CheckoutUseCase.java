@@ -6,6 +6,7 @@ import com.centauro.billing.application.dto.CheckoutView;
 import com.centauro.billing.application.service.CheckoutTransactions;
 import com.centauro.billing.application.service.GatewayOperations;
 import com.centauro.billing.application.service.GatewaySettings;
+import com.centauro.billing.application.service.GatewaySyncService;
 import com.centauro.billing.application.service.SubscriptionViewAssembler;
 import com.centauro.billing.domain.exception.BillingException;
 import com.centauro.billing.domain.exception.CheckoutNotAllowedException;
@@ -30,8 +31,9 @@ import java.util.regex.Pattern;
 
 /**
  * Checkout del tenant en dos pasos: {@link #prepare} (PENDING local, sin MP) y {@link #authorize}
- * (preapproval without-plan-authorized con {@code card_token_id}). Nunca activa el período: la
- * suscripción solo se activa o renueva con un cobro aprobado y reconsultado (webhook o conciliación).
+ * (preapproval without-plan-authorized con {@code card_token_id}). Tras crear el preapproval lo
+ * reconsulta y vincula el débito; nunca activa el período: la suscripción solo se activa o renueva
+ * con un cobro aprobado y reconsultado (webhook o conciliación).
  */
 @Service
 public class CheckoutUseCase {
@@ -45,14 +47,17 @@ public class CheckoutUseCase {
 
     private final CheckoutTransactions transactions;
     private final GatewayOperations gatewayOperations;
+    private final GatewaySyncService sync;
     private final GatewaySettings settings;
     private final SubscriptionViewAssembler assembler;
     private final Clock clock;
 
     public CheckoutUseCase(CheckoutTransactions transactions, GatewayOperations gatewayOperations,
-                           GatewaySettings settings, SubscriptionViewAssembler assembler, Clock clock) {
+                           GatewaySyncService sync, GatewaySettings settings, SubscriptionViewAssembler assembler,
+                           Clock clock) {
         this.transactions = transactions;
         this.gatewayOperations = gatewayOperations;
+        this.sync = sync;
         this.settings = settings;
         this.assembler = assembler;
         this.clock = clock;
@@ -78,6 +83,8 @@ public class CheckoutUseCase {
         OffsetDateTime now = OffsetDateTime.now(clock);
         CheckoutTransactions.AuthorizeClaim claim = transactions.claimForAuthorize(tenantId, checkoutId, now);
         if (claim.alreadyDone()) {
+            // Idempotente: si el checkout quedó PENDING con preapproval (webhook ausente), reconsulta y vincula.
+            applyAuthorizedPreapproval(claim.checkout(), actor);
             return view(claim.checkout(), claim.plan(), true);
         }
 
@@ -106,6 +113,9 @@ public class CheckoutUseCase {
             gatewayOperations.cancelQuietly(result.gatewaySubscriptionId(), "checkout " + attached.getStatus());
             throw new CheckoutNotAllowedException("Otro checkout reemplazó a este mientras se autorizaba; reintentar");
         }
+        // Vincula el débito ya: sin esto el checkout sigue PENDING hasta el webhook y el tenant ve
+        // "pago sin terminar" / "débito no adherido" aunque Mercado Pago haya aceptado la tarjeta.
+        applyAuthorizedPreapproval(attached, actor);
         log.info("Checkout {} autorizado para el tenant {} (preapproval {}) por {}", attached.getId(), tenantId,
                 result.gatewaySubscriptionId(), actor.logId());
         return view(attached, claim.plan(), false);
@@ -144,6 +154,26 @@ public class CheckoutUseCase {
             transactions.clearAuthorizeClaim(checkoutId);
         } catch (RuntimeException e) {
             log.error("No se pudo liberar el claim del checkout {}", checkoutId, e);
+        }
+    }
+
+    /**
+     * Reconsulta el preapproval (nunca usa el payload de creación) y lo aplica. Si MP aún lo muestra pending
+     * o la consulta falla, el checkout queda PENDING con el id: lo retoman el webhook o la conciliación.
+     */
+    private void applyAuthorizedPreapproval(GatewayCheckout checkout, Actor actor) {
+        String preapprovalId = checkout.getGatewayPreapprovalId();
+        if (!checkout.isPending() || preapprovalId == null || preapprovalId.isBlank()) {
+            return;
+        }
+        try {
+            var snapshot = gatewayOperations.requireGateway().getSubscription(preapprovalId);
+            GatewaySyncService.Outcome outcome = sync.applyPreapproval(snapshot, actor, OffsetDateTime.now(clock));
+            log.info("Checkout {}: preapproval {} aplicado tras authorize ({})", checkout.getId(), preapprovalId,
+                    outcome.detail());
+        } catch (RuntimeException e) {
+            log.warn("Checkout {}: no se pudo reconsultar el preapproval {} tras authorize: {}; lo retoma el webhook",
+                    checkout.getId(), preapprovalId, redactForLog(e.getMessage()));
         }
     }
 
