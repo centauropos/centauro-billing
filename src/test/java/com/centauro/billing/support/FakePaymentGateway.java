@@ -27,6 +27,11 @@ public class FakePaymentGateway implements PaymentGateway {
     public final Map<String, GatewaySubscriptionSnapshot> subscriptions = new HashMap<>();
     public final Map<String, GatewayChargeSnapshot> charges = new HashMap<>();
     public final Map<String, List<GatewayChargeSnapshot>> chargesBySubscription = new HashMap<>();
+    /**
+     * Estado que devuelve {@link #getSubscription} justo después de crear. En producción MP suele devolver
+     * {@code authorized}; el default {@code pending} deja que los tests cubran el camino del webhook.
+     */
+    public GatewaySubscriptionStatus createdLookupStatus = GatewaySubscriptionStatus.PENDING;
     /** Falla de las operaciones de escritura (crear, cambiar importe, cancelar). */
     public RuntimeException failure;
     /** Falla de las consultas. */
@@ -43,10 +48,10 @@ public class FakePaymentGateway implements PaymentGateway {
         failIfConfigured();
         created.add(request);
         String id = "pre-" + (++sequence);
-        // El resultado es authorized; el snapshot en mapa queda pending hasta que el test (o un
-        // h.preapproval AUTHORIZED) simule el webhook / la reconsulta.
-        subscriptions.putIfAbsent(id, new GatewaySubscriptionSnapshot(id, GatewaySubscriptionStatus.PENDING,
-                "pending", request.checkoutId().toString(), request.amount(), request.currency(), null, null));
+        GatewaySubscriptionStatus lookup = createdLookupStatus == null
+                ? GatewaySubscriptionStatus.PENDING : createdLookupStatus;
+        subscriptions.putIfAbsent(id, new GatewaySubscriptionSnapshot(id, lookup, lookup.name().toLowerCase(),
+                request.checkoutId().toString(), request.amount(), request.currency(), null, null));
         return new RecurringCheckoutResult(id, null, "authorized");
     }
 

@@ -104,7 +104,8 @@ class WebhookUseCaseTest {
         assertThat(notify("n-1", PREAPPROVAL, "pre-1")).isFalse();
 
         assertThat(h.webhookEvents.all()).hasSize(1);
-        assertThat(h.gateway.subscriptionLookups).containsExactly("pre-1");
+        // Authorize reconsulta el preapproval (queda pending en el fake) y el webhook lo vuelve a consultar.
+        assertThat(h.gateway.subscriptionLookups).containsExactly("pre-1", "pre-1");
         assertThat(s.isGatewayAuthorized()).isTrue();
     }
 

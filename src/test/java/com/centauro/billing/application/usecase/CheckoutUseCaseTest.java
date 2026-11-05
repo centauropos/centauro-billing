@@ -5,6 +5,7 @@ import com.centauro.billing.application.dto.CheckoutRequest;
 import com.centauro.billing.application.dto.CheckoutView;
 import com.centauro.billing.application.dto.TenantSubscriptionView;
 import com.centauro.billing.domain.enums.CheckoutStatus;
+import com.centauro.billing.domain.enums.GatewaySubscriptionStatus;
 import com.centauro.billing.domain.enums.SubscriptionStatus;
 import com.centauro.billing.domain.enums.SuspensionReason;
 import com.centauro.billing.domain.exception.CheckoutInProgressException;
@@ -143,6 +144,72 @@ class CheckoutUseCaseTest {
         assertThat(stored.getStatus()).isEqualTo(CheckoutStatus.PENDING);
         assertThat(stored.getGatewayPreapprovalId()).isEqualTo("pre-1");
         assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.TRIALING);
+    }
+
+    @Test
+    void authorizeLinksDebitWhenReconsultedPreapprovalIsAuthorized() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        h.gateway.createdLookupStatus = GatewaySubscriptionStatus.AUTHORIZED;
+        UUID checkoutId = prepare("PROFESIONAL").checkoutId();
+
+        authorize(checkoutId);
+
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.AUTHORIZED);
+        assertThat(s.isGatewayAuthorized()).isTrue();
+        assertThat(s.getGatewaySubscriptionId()).isEqualTo("pre-1");
+        assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.TRIALING);
+        assertThat(TestFixtures.assembler(h.checkouts, h.payments, h.gatewayOperations).tenantView(s, pro, NOW)
+                .pendingCheckout()).isNull();
+        assertThat(h.gateway.subscriptionLookups).containsExactly("pre-1");
+    }
+
+    @Test
+    void authorizeOnCanceledSubscriptionLinksDebitWithoutActivating() {
+        Subscription s = h.store(subscription().planId(inicial.getId()).status(SubscriptionStatus.CANCELED)
+                .trialEndsAt(null).currentPeriodEnd(NOW.minusDays(1)).build());
+        h.gateway.createdLookupStatus = GatewaySubscriptionStatus.AUTHORIZED;
+        UUID checkoutId = prepare("INICIAL").checkoutId();
+
+        authorize(checkoutId);
+
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.AUTHORIZED);
+        assertThat(s.isGatewayAuthorized()).isTrue();
+        assertThat(s.getStatus()).isEqualTo(SubscriptionStatus.CANCELED);
+        assertThat(h.gateway.created.get(0).startDate()).isNull();
+        TenantSubscriptionView view = TestFixtures.assembler(h.checkouts, h.payments, h.gatewayOperations)
+                .tenantView(s, inicial, NOW);
+        assertThat(view.pendingCheckout()).isNull();
+        assertThat(view.hasPaymentMethod()).isTrue();
+    }
+
+    @Test
+    void authorizeRetryAppliesPendingCheckoutOnceMercadoPagoShowsAuthorized() {
+        Subscription s = h.store(subscription().planId(pro.getId()).build());
+        UUID checkoutId = prepare("PROFESIONAL").checkoutId();
+        authorize(checkoutId);
+        assertThat(s.isGatewayAuthorized()).isFalse();
+        h.preapproval("pre-1", GatewaySubscriptionStatus.AUTHORIZED, checkoutId, new BigDecimal("59900"), NOW);
+
+        CheckoutView retried = authorize(checkoutId);
+
+        assertThat(retried.reused()).isTrue();
+        assertThat(h.checkouts.findById(checkoutId).orElseThrow().getStatus()).isEqualTo(CheckoutStatus.AUTHORIZED);
+        assertThat(s.isGatewayAuthorized()).isTrue();
+        assertThat(h.gateway.created).hasSize(1);
+    }
+
+    @Test
+    void authorizeSucceedsAndLeavesPendingIfReconsultFails() {
+        h.store(subscription().planId(pro.getId()).build());
+        h.gateway.createdLookupStatus = GatewaySubscriptionStatus.AUTHORIZED;
+        h.gateway.readFailure = new GatewayUnavailableException("down");
+        UUID checkoutId = prepare("PROFESIONAL").checkoutId();
+
+        CheckoutView view = authorize(checkoutId);
+
+        GatewayCheckout stored = h.checkouts.findById(view.checkoutId()).orElseThrow();
+        assertThat(stored.getStatus()).isEqualTo(CheckoutStatus.PENDING);
+        assertThat(stored.getGatewayPreapprovalId()).isEqualTo("pre-1");
     }
 
     @Test
